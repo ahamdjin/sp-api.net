@@ -575,7 +575,11 @@ Public Class MainForm
         combo.Items.AddRange(options.Cast(Of Object)().ToArray())
         Dim value = S(key)
         If key = "fulfillment" Then value = If(B("isAmazonFulfilled"), "FBA", "Merchant")
-        If combo.Items.Contains(value) Then combo.SelectedItem = value ElseIf combo.Items.Count > 0 Then combo.SelectedIndex = 0
+        If combo.Items.Contains(value) Then
+            combo.SelectedItem = value
+        ElseIf combo.Items.Count > 0 Then
+            combo.SelectedIndex = 0
+        End If
         AddHandler combo.SelectedIndexChanged, Sub(sender, e)
                                                    If key = "fulfillment" Then
                                                        FieldValues("isAmazonFulfilled") = (CStr(combo.SelectedItem) = "FBA")
