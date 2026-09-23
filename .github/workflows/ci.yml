@@ -14,7 +14,14 @@ jobs:
       - name: Verify SP-API surface
         shell: pwsh
         run: |
-          $source = Get-Content "MainForm.vb" -Raw
+          $view = Get-Content "MainForm.vb" -Raw
+          $api = Get-Content "ApiRequests.vb" -Raw
+          $source = $view + [Environment]::NewLine + $api
+
+          $projectSourceFiles = @([regex]::Matches((Get-Content "SP-API.NET.vbproj" -Raw), '<Compile Include="([^"]+\.vb)" />') | ForEach-Object { $_.Groups[1].Value })
+          if ($projectSourceFiles.Count -ne 2 -or $projectSourceFiles -notcontains "MainForm.vb" -or $projectSourceFiles -notcontains "ApiRequests.vb") {
+            throw "The application must stay split into exactly MainForm.vb and ApiRequests.vb."
+          }
           $required = @(
             "/sellers/v1/marketplaceParticipations",
             "/catalog/2022-04-01/items",

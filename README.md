@@ -14,6 +14,15 @@ The project targets **.NET Framework 4.7.2** for broader Visual Studio 2019 comp
 
 There is no Node.js, npm, browser server, local web server, or NuGet package setup. The app uses the normal Windows/.NET networking stack, Windows TLS policy, Windows certificate trust, and the system proxy.
 
+## Code layout
+
+There are only **two VB code files to read**:
+
+- `MainForm.vb` — WinForms view/UX, fields, navigation, results, Sandbox examples, and workflow follow-up controls.
+- `ApiRequests.vb` — LWA/SP-API requests, Amazon endpoints, request validation, retries, feeds/reports/inbound/document handling, and API error normalization.
+
+They are two parts of the same VB `Partial Class`, so the split stays simple: no dependency-injection framework, service container, generated designer files, or extra abstraction layer.
+
 ## Using the app
 
 Enter the LWA Client ID, Client Secret, and Refresh Token, choose Sandbox or Production and the marketplace, then click **Test connection**.
