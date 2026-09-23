@@ -259,6 +259,14 @@ Public Class MainForm
         DirectCast(reportTypeControl, TextBox).Text = "GET_MERCHANT_LISTINGS_ALL_DATA_TEST"
         If B("confirmed") Then Throw New InvalidOperationException("Changing a write input must invalidate confirmation.")
 
+        FieldValues("confirmed") = True
+        BuildOperationFields()
+        Dim confirmationControl As Control = Nothing
+        If Not FieldControls.TryGetValue("confirmed", confirmationControl) Then Throw New InvalidOperationException("Write confirmation checkbox was not built.")
+        DirectCast(confirmationControl, CheckBox).Checked = True
+        InvalidateConnectionState()
+        If DirectCast(confirmationControl, CheckBox).Checked OrElse B("confirmed") Then Throw New InvalidOperationException("Credential/context changes must visibly clear write confirmation.")
+
         SelectMarketplaceById("ATVPDKIKX0DER")
         cboEnvironment.SelectedIndex = 0
         If Endpoint() <> "https://sandbox.sellingpartnerapi-na.amazon.com" Then Throw New InvalidOperationException("North America Sandbox endpoint is incorrect.")
@@ -895,12 +903,7 @@ Public Class MainForm
     Private Sub SetUserFieldValue(key As String, value As Object)
         FieldValues(key) = value
         If key <> "confirmed" AndAlso IsWriteOperation(CurrentOperation) AndAlso B("confirmed") Then
-            FieldValues("confirmed") = False
-            Dim confirmation As Control = Nothing
-            If FieldControls.TryGetValue("confirmed", confirmation) Then
-                Dim check = TryCast(confirmation, CheckBox)
-                If check IsNot Nothing AndAlso check.Checked Then check.Checked = False
-            End If
+            ClearWriteConfirmation()
         End If
     End Sub
 
@@ -978,11 +981,20 @@ Public Class MainForm
         Return ""
     End Function
 
+    Private Sub ClearWriteConfirmation()
+        FieldValues("confirmed") = False
+        Dim confirmation As Control = Nothing
+        If FieldControls.TryGetValue("confirmed", confirmation) Then
+            Dim check = TryCast(confirmation, CheckBox)
+            If check IsNot Nothing AndAlso check.Checked Then check.Checked = False
+        End If
+    End Sub
+
     Private Sub InvalidateConnectionState()
         ConnectionVerified = False
         CachedAccessToken = ""
         CachedAccessTokenExpiresUtc = DateTimeOffset.MinValue
-        FieldValues("confirmed") = False
+        ClearWriteConfirmation()
         lblConnection.Text = "Not tested"
         lblConnection.ForeColor = Color.DimGray
         If cboEnvironment.SelectedIndex >= 0 Then btnTest.Text = "Test " & EnvironmentName() & " connection"
