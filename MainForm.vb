@@ -208,6 +208,8 @@ Public Class MainForm
     Private LastDocumentUrl As String = ""
     Private ReadOnly DocumentUrls As New List(Of KeyValuePair(Of String, String))()
     Private NextOperationId As String = ""
+    Private NextFieldKey As String = ""
+    Private NextFieldValue As String = ""
     Private ConnectionVerified As Boolean
     Private CachedAccessToken As String = ""
     Private CachedAccessTokenExpiresUtc As DateTimeOffset = DateTimeOffset.MinValue
@@ -304,6 +306,33 @@ Public Class MainForm
             invalidDatasetRejected = (ex.Code = "INVALID_CATALOG_INCLUDED_DATA")
         End Try
         If Not invalidDatasetRejected Then Throw New InvalidOperationException("Invalid Catalog includedData must be rejected.")
+
+        SelectOperation("catalog")
+        FieldValues("pageToken") = "STALE"
+        BuildOperationFields()
+        SelectOperation("fees")
+        If S("pageToken") <> "" Then Throw New InvalidOperationException("Changing operations must clear stale pagination tokens.")
+
+        SelectOperation("catalog")
+        Dim pagedResult As New ApiResult With {
+            .Ok = True,
+            .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"pagination", New Dictionary(Of String, Object) From {{"nextToken", "NEXT_TOKEN"}}}
+            }
+        }
+        ConfigureNextStep("catalog", pagedResult)
+        If NextOperationId <> "catalog" OrElse NextFieldKey <> "pageToken" OrElse NextFieldValue <> "NEXT_TOKEN" Then Throw New InvalidOperationException("Catalog next-page action was not prepared.")
+        OpenNextStep(Nothing, EventArgs.Empty)
+        If S("pageToken") <> "NEXT_TOKEN" Then Throw New InvalidOperationException("Catalog next-page token was not loaded into the form.")
+
+        Dim failedFeed As New ApiResult With {
+            .Ok = False,
+            .Status = 422,
+            .Data = New Dictionary(Of String, Object) From {{"resultFeedDocumentId", "result-doc"}}
+        }
+        ConfigureNextStep("feed", failedFeed)
+        If NextOperationId <> "feedDocument" OrElse NextFieldValue <> "result-doc" Then Throw New InvalidOperationException("Failed feed processing report must remain reachable.")
 
         Dim tooManyValuesRejected As Boolean = False
         Try
@@ -613,8 +642,15 @@ Public Class MainForm
         SelectOperation(CStr(e.Node.Tag))
     End Sub
 
+    Private Sub ClearPaginationTokens()
+        For Each key In {"pageToken", "inventoryNextToken", "orderPaginationToken", "reportNextToken", "feedNextToken", "inboundPaginationToken"}
+            FieldValues(key) = ""
+        Next
+    End Sub
+
     Private Sub SelectOperation(id As String)
         SaveVisibleFieldValues()
+        If Not String.Equals(id, CurrentOperation, StringComparison.Ordinal) Then ClearPaginationTokens()
         CurrentOperation = id
         FieldValues("confirmed") = False
         Dim operation = Operations.First(Function(x) x.Id = id)
@@ -630,6 +666,8 @@ Public Class MainForm
         DocumentUrls.Clear()
         btnNextStep.Visible = False
         NextOperationId = ""
+        NextFieldKey = ""
+        NextFieldValue = ""
         btnRun.Enabled = operation.Kind <> "legacy"
     End Sub
 
@@ -2653,43 +2691,123 @@ Public Class MainForm
     Private Sub ConfigureNextStep(operation As String, result As ApiResult)
         btnNextStep.Visible = False
         NextOperationId = ""
-        If Not result.Ok Then Return
+        NextFieldKey = ""
+        NextFieldValue = ""
 
         Dim data = AsDict(result.Data)
+
+        ' A failed feed can still return a processing report that explains record-level errors.
+        If operation = "feed" Then
+            Dim resultDocumentId = StringValue(GetValue(data, "resultFeedDocumentId"))
+            If resultDocumentId <> "" Then
+                SetNextStep("feedDocument", "feedDocumentId", resultDocumentId, "Next: Open processing report")
+            End If
+        End If
+        If Not result.Ok Then
+            btnNextStep.Visible = NextOperationId <> ""
+            Return
+        End If
+
+        Dim pagination = AsDict(GetValue(data, "pagination"))
         Select Case operation
+            Case "catalog"
+                Dim token = StringValue(GetValue(pagination, "nextToken"))
+                If token <> "" Then SetNextStep("catalog", "pageToken", token, "Next: Prepare next page")
+            Case "inventory"
+                Dim token = StringValue(GetValue(pagination, "nextToken"))
+                If token <> "" Then SetNextStep("inventory", "inventoryNextToken", token, "Next: Prepare next page")
+            Case "orders"
+                Dim token = StringValue(GetValue(pagination, "nextToken"))
+                If token <> "" Then SetNextStep("orders", "orderPaginationToken", token, "Next: Prepare next page")
+            Case "reports"
+                Dim token = StringValue(GetValue(data, "nextToken"))
+                If token <> "" Then SetNextStep("reports", "reportNextToken", token, "Next: Prepare next page")
+            Case "feeds"
+                Dim token = StringValue(GetValue(data, "nextToken"))
+                If token <> "" Then SetNextStep("feeds", "feedNextToken", token, "Next: Prepare next page")
+            Case "inboundPlans"
+                Dim token = StringValue(GetValue(pagination, "nextToken"))
+                If token <> "" Then SetNextStep("inboundPlans", "inboundPaginationToken", token, "Next: Prepare next page")
             Case "createReport"
-                If StringValue(GetValue(data, "reportId")) <> "" Then
-                    NextOperationId = "report"
-                    btnNextStep.Text = "Next: Check report status"
-                End If
+                Dim reportId = StringValue(GetValue(data, "reportId"))
+                If reportId <> "" Then SetNextStep("report", "reportId", reportId, "Next: Check report status")
             Case "report"
-                If StringValue(GetValue(data, "reportDocumentId")) <> "" Then
-                    NextOperationId = "reportDocument"
-                    btnNextStep.Text = "Next: Open report document"
+                Dim reportId = StringValue(GetValue(data, "reportId"))
+                If reportId = "" Then reportId = S("reportId")
+                Dim documentId = StringValue(GetValue(data, "reportDocumentId"))
+                Dim status = StringValue(GetValue(data, "processingStatus"))
+                If documentId <> "" Then
+                    SetNextStep("reportDocument", "reportDocumentId", documentId, "Next: Open report document")
+                ElseIf (status = "IN_QUEUE" OrElse status = "IN_PROGRESS") AndAlso reportId <> "" Then
+                    SetNextStep("report", "reportId", reportId, "Next: Check report status again")
                 End If
             Case "submitFeed"
-                If StringValue(GetValue(data, "feedId")) <> "" Then
-                    NextOperationId = "feed"
-                    btnNextStep.Text = "Next: Check feed status"
-                End If
+                Dim feedId = StringValue(GetValue(data, "feedId"))
+                If feedId <> "" Then SetNextStep("feed", "feedId", feedId, "Next: Check feed status")
             Case "feed"
-                If StringValue(GetValue(data, "resultFeedDocumentId")) <> "" Then
-                    NextOperationId = "feedDocument"
-                    btnNextStep.Text = "Next: Open processing report"
+                Dim feedId = StringValue(GetValue(data, "feedId"))
+                If feedId = "" Then feedId = S("feedId")
+                Dim resultDocumentId = StringValue(GetValue(data, "resultFeedDocumentId"))
+                Dim status = StringValue(GetValue(data, "processingStatus"))
+                If resultDocumentId <> "" Then
+                    SetNextStep("feedDocument", "feedDocumentId", resultDocumentId, "Next: Open processing report")
+                ElseIf (status = "IN_QUEUE" OrElse status = "IN_PROGRESS") AndAlso feedId <> "" Then
+                    SetNextStep("feed", "feedId", feedId, "Next: Check feed status again")
                 End If
             Case "createInboundPlan"
-                If StringValue(GetValue(data, "operationId")) <> "" Then
-                    NextOperationId = "inboundOperationStatus"
-                    btnNextStep.Text = "Next: Check operation status"
+                Dim operationId = StringValue(GetValue(data, "operationId"))
+                If operationId <> "" Then SetNextStep("inboundOperationStatus", "operationId", operationId, "Next: Check operation status")
+            Case "inboundOperationStatus"
+                Dim operationId = StringValue(GetValue(data, "operationId"))
+                If operationId = "" Then operationId = S("operationId")
+                Dim status = StringValue(GetValue(data, "operationStatus"))
+                If status = "IN_PROGRESS" AndAlso operationId <> "" Then
+                    SetNextStep("inboundOperationStatus", "operationId", operationId, "Next: Check operation status again")
+                ElseIf status = "SUCCESS" AndAlso S("inboundPlanId") <> "" Then
+                    SetNextStep("inboundPlan", "inboundPlanId", S("inboundPlanId"), "Next: Open inbound plan")
                 End If
         End Select
 
         btnNextStep.Visible = NextOperationId <> ""
     End Sub
 
+    Private Sub SetNextStep(operationId As String, fieldKey As String, fieldValue As String, label As String)
+        NextOperationId = operationId
+        NextFieldKey = fieldKey
+        NextFieldValue = fieldValue
+        btnNextStep.Text = label
+    End Sub
+
     Private Sub OpenNextStep(sender As Object, e As EventArgs)
         If NextOperationId = "" Then Return
-        NavigateToOperation(NextOperationId)
+
+        Dim targetOperation = NextOperationId
+        Dim patchKey = NextFieldKey
+        Dim patchValue = NextFieldValue
+
+        If String.Equals(targetOperation, CurrentOperation, StringComparison.Ordinal) Then
+            SaveVisibleFieldValues()
+            If patchKey <> "" Then FieldValues(patchKey) = patchValue
+            ClearWriteConfirmation()
+            BuildOperationFields()
+            txtResult.Text = If(patchKey.EndsWith("Token", StringComparison.OrdinalIgnoreCase) OrElse patchKey = "pageToken",
+                                "Next-page token loaded. Run the request to fetch the next page.",
+                                "Follow-up values loaded. Run the request again.")
+            txtRaw.Text = ""
+            lblMeta.Text = ""
+            btnOpenDocument.Visible = False
+            cboDocuments.Visible = False
+            cboDocuments.Items.Clear()
+            DocumentUrls.Clear()
+            btnNextStep.Visible = False
+            NextOperationId = ""
+            NextFieldKey = ""
+            NextFieldValue = ""
+            Return
+        End If
+
+        If patchKey <> "" Then FieldValues(patchKey) = patchValue
+        NavigateToOperation(targetOperation)
     End Sub
 
     Private Sub NavigateToOperation(operationId As String)
