@@ -295,7 +295,10 @@ Public Class MainForm
         AddHandler btnTest.Click, Async Sub(sender, e) Await TestConnectionAsync()
         cGrid.Controls.Add(btnTest, 4, 1)
 
-        lblConnection.AutoSize = True
+        lblConnection.AutoSize = False
+        lblConnection.Dock = DockStyle.Fill
+        lblConnection.AutoEllipsis = True
+        lblConnection.TextAlign = ContentAlignment.MiddleLeft
         lblConnection.Text = "Not tested"
         lblConnection.ForeColor = Color.DimGray
         cGrid.Controls.Add(lblConnection, 5, 1)
@@ -963,7 +966,7 @@ Public Class MainForm
             Dim probe = Await CallSpApiAsync("/sellers/v1/marketplaceParticipations", HttpMethod.Get, Nothing, token.Item1)
             If Not probe.Ok Then
                 ConnectionVerified = False
-                lblConnection.Text = "Connection failed - " & If(probe.Problem IsNot Nothing, probe.Problem.Message, probe.StatusText)
+                lblConnection.Text = "Connection failed - see Result"
                 lblConnection.ForeColor = Color.DarkRed
                 ShowResult("connection", probe)
                 Return
@@ -975,12 +978,12 @@ Public Class MainForm
             ShowResult("connection", probe)
         Catch ex As AppException
             ConnectionVerified = False
-            lblConnection.Text = "Connection failed - " & ex.Message
+            lblConnection.Text = "Connection failed - see Result"
             lblConnection.ForeColor = Color.DarkRed
             ShowResult("connection", LocalFailure(ex))
         Catch ex As Exception
             ConnectionVerified = False
-            lblConnection.Text = "Connection failed - " & ex.Message
+            lblConnection.Text = "Connection failed - see Result"
             lblConnection.ForeColor = Color.DarkRed
             ShowResult("connection", LocalFailure(New AppException(ex.Message, 500, "CONNECTION_TEST_FAILED", ex.ToString())))
         Finally
