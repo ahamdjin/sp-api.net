@@ -5,6 +5,7 @@ Option Infer On
 Imports System
 Imports System.Collections
 Imports System.Collections.Generic
+Imports System.Diagnostics
 Imports System.Drawing
 Imports System.Globalization
 Imports System.IO
