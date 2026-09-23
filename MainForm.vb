@@ -4,23 +4,14 @@ Option Infer On
 
 Imports System
 Imports System.Collections
-Imports Microsoft.VisualBasic
 Imports System.Collections.Generic
-Imports System.Diagnostics
 Imports System.Drawing
 Imports System.Globalization
 Imports System.IO
-Imports System.IO.Compression
 Imports System.Linq
 Imports System.Net
-Imports System.Net.Http
-Imports System.Net.Http.Headers
 Imports System.Text
-Imports System.Text.RegularExpressions
-Imports System.Threading
 Imports System.Threading.Tasks
-Imports System.Web
-Imports System.Web.Script.Serialization
 Imports System.Windows.Forms
 
 Module Program

@@ -22,6 +22,31 @@ jobs:
           if ($projectSourceFiles.Count -ne 2 -or $projectSourceFiles -notcontains "MainForm.vb" -or $projectSourceFiles -notcontains "ApiRequests.vb") {
             throw "The application must stay split into exactly MainForm.vb and ApiRequests.vb."
           }
+
+          $viewOnlyBanned = @(
+            'New HttpClient',
+            'CallSpApiAsync(',
+            '/catalog/2022-04-01/',
+            '/orders/2026-01-01/',
+            '/reports/2021-06-30/',
+            '/feeds/2021-06-30/',
+            '/inbound/fba/2024-03-20/'
+          )
+          foreach ($value in $viewOnlyBanned) {
+            if ($view.Contains($value)) { throw "API/transport code leaked back into MainForm.vb: $value" }
+          }
+
+          $apiOnlyBanned = @(
+            'New Button',
+            'New TextBox',
+            'New ComboBox',
+            'New TreeView',
+            'BuildUi()',
+            'BuildOperationFields()'
+          )
+          foreach ($value in $apiOnlyBanned) {
+            if ($api.Contains($value)) { throw "WinForms view construction leaked into ApiRequests.vb: $value" }
+          }
           $required = @(
             "/sellers/v1/marketplaceParticipations",
             "/catalog/2022-04-01/items",
