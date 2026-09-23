@@ -446,6 +446,7 @@ Public Class MainForm
     End Sub
 
     Private Sub SelectOperation(id As String)
+        SaveVisibleFieldValues()
         CurrentOperation = id
         FieldValues("confirmed") = False
         Dim operation = Operations.First(Function(x) x.Id = id)
@@ -463,7 +464,6 @@ Public Class MainForm
 
     Private Sub BuildOperationFields()
         If requestPanel Is Nothing Then Return
-        SaveVisibleFieldValues()
         requestPanel.SuspendLayout()
         requestPanel.Controls.Clear()
         FieldControls.Clear()
@@ -638,7 +638,7 @@ Public Class MainForm
             box.ScrollBars = ScrollBars.Vertical
             box.Height = height
         End If
-        AddHandler box.TextChanged, Sub(sender, e) FieldValues(key) = box.Text
+        AddHandler box.TextChanged, Sub(sender, e) SetUserFieldValue(key, box.Text)
         host.Controls.Add(label)
         host.Controls.Add(box)
         requestPanel.Controls.Add(host)
@@ -659,9 +659,9 @@ Public Class MainForm
         End If
         AddHandler combo.SelectedIndexChanged, Sub(sender, e)
                                                    If key = "fulfillment" Then
-                                                       FieldValues("isAmazonFulfilled") = (CStr(combo.SelectedItem) = "FBA")
+                                                       SetUserFieldValue("isAmazonFulfilled", CStr(combo.SelectedItem) = "FBA")
                                                    Else
-                                                       FieldValues(key) = CStr(combo.SelectedItem)
+                                                       SetUserFieldValue(key, CStr(combo.SelectedItem))
                                                    End If
                                                End Sub
         If extraHandler IsNot Nothing Then AddHandler combo.SelectedIndexChanged, extraHandler
@@ -697,9 +697,21 @@ Public Class MainForm
 
     Private Sub AddCheck(key As String, labelText As String)
         Dim check As New CheckBox With {.Name = key, .Tag = key, .Text = labelText, .Checked = B(key), .AutoSize = True, .MaximumSize = New Size(Math.Max(620, requestPanel.ClientSize.Width - 35), 0), .Margin = New Padding(3, 7, 3, 7)}
-        AddHandler check.CheckedChanged, Sub(sender, e) FieldValues(key) = check.Checked
+        AddHandler check.CheckedChanged, Sub(sender, e) SetUserFieldValue(key, check.Checked)
         requestPanel.Controls.Add(check)
         FieldControls(key) = check
+    End Sub
+
+    Private Sub SetUserFieldValue(key As String, value As Object)
+        FieldValues(key) = value
+        If key <> "confirmed" AndAlso IsWriteOperation(CurrentOperation) AndAlso B("confirmed") Then
+            FieldValues("confirmed") = False
+            Dim confirmation As Control = Nothing
+            If FieldControls.TryGetValue("confirmed", confirmation) Then
+                Dim check = TryCast(confirmation, CheckBox)
+                If check IsNot Nothing AndAlso check.Checked Then check.Checked = False
+            End If
+        End If
     End Sub
 
     Private Sub SaveVisibleFieldValues()
@@ -778,6 +790,7 @@ Public Class MainForm
 
     Private Sub InvalidateConnectionState()
         ConnectionVerified = False
+        FieldValues("confirmed") = False
         lblConnection.Text = "Not tested"
         lblConnection.ForeColor = Color.DimGray
         If cboEnvironment.SelectedIndex >= 0 Then btnTest.Text = "Test " & EnvironmentName() & " connection"
