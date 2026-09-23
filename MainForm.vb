@@ -26,7 +26,7 @@ Imports System.Windows.Forms
 Module Program
     <STAThread>
     Public Sub Main()
-        ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12
+        ServicePointManager.SecurityProtocol = SecurityProtocolType.SystemDefault
         Application.EnableVisualStyles()
         Application.SetCompatibleTextRenderingDefault(False)
 
