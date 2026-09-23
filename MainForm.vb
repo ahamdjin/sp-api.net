@@ -4,6 +4,7 @@ Option Infer On
 
 Imports System
 Imports System.Collections
+Imports Microsoft.VisualBasic
 Imports System.Collections.Generic
 Imports System.Diagnostics
 Imports System.Drawing
@@ -784,10 +785,10 @@ Public Class MainForm
 
         If mode = "identifier" AndAlso identifierType = "ASIN" AndAlso identifiers.Count = 1 Then
             Dim q As New List(Of KeyValuePair(Of String, String)) From {
-                Pair("marketplaceIds", marketplace.Id), Pair("includedData", included)
+                QPair("marketplaceIds", marketplace.Id), QPair("includedData", included)
             }
-            If Not IsSandbox() Then q.Add(Pair("locale", marketplace.Locale))
-            Dim exact = Await CallSpApiAsync("/catalog/2022-04-01/items/" & Encode(identifiers(0)) & "?" & Query(q), HttpMethod.Get, Nothing, token)
+            If Not IsSandbox() Then q.Add(QPair("locale", marketplace.Locale))
+            Dim exact = Await CallSpApiAsync("/catalog/2022-04-01/items/" & Encode(identifiers(0)) & "?" & BuildQuery(q), HttpMethod.Get, Nothing, token)
             If exact.Ok Then
                 exact.Data = New Dictionary(Of String, Object) From {{"numberOfResults", 1}, {"items", New Object() {exact.Data}}}
             End If
@@ -795,24 +796,24 @@ Public Class MainForm
         End If
 
         Dim params As New List(Of KeyValuePair(Of String, String)) From {
-            Pair("marketplaceIds", marketplace.Id), Pair("includedData", included)
+            QPair("marketplaceIds", marketplace.Id), QPair("includedData", included)
         }
         If Not IsSandbox() Then
-            params.Add(Pair("locale", marketplace.Locale))
-            params.Add(Pair("pageSize", IntField("catalogPageSize", 1, 20, 20).ToString(CultureInfo.InvariantCulture)))
+            params.Add(QPair("locale", marketplace.Locale))
+            params.Add(QPair("pageSize", IntField("catalogPageSize", 1, 20, 20).ToString(CultureInfo.InvariantCulture)))
         End If
         If mode = "keywords" Then
-            params.Add(Pair("keywords", query))
-            If Not IsSandbox() Then params.Add(Pair("keywordsLocale", marketplace.Locale))
+            params.Add(QPair("keywords", query))
+            If Not IsSandbox() Then params.Add(QPair("keywordsLocale", marketplace.Locale))
             AddCsvParam(params, "brandNames", S("brandNames"), 20)
             AddCsvParam(params, "classificationIds", S("classificationIds"), 20)
             AddOptional(params, "pageToken", S("pageToken"))
         Else
-            params.Add(Pair("identifiers", String.Join(",", identifiers)))
-            params.Add(Pair("identifiersType", identifierType))
-            If identifierType = "SKU" Then params.Add(Pair("sellerId", Required("sellerId")))
+            params.Add(QPair("identifiers", String.Join(",", identifiers)))
+            params.Add(QPair("identifiersType", identifierType))
+            If identifierType = "SKU" Then params.Add(QPair("sellerId", Required("sellerId")))
         End If
-        Return Await CallSpApiAsync("/catalog/2022-04-01/items?" & Query(params), HttpMethod.Get, Nothing, token)
+        Return Await CallSpApiAsync("/catalog/2022-04-01/items?" & BuildQuery(params), HttpMethod.Get, Nothing, token)
     End Function
 
     Private Async Function CompleteCatalogFamilyAsync(requestedAsin As String, included As String, accessToken As String) As Task(Of ApiResult)
@@ -838,7 +839,7 @@ Public Class MainForm
                 Dim related = Await SearchCatalogAsinsAsync(batch, included, accessToken)
                 totalDuration += related.DurationMs
                 If related.Ok Then
-                    Dim data = Dict(related.Data)
+                    Dim data = AsDict(related.Data)
                     For Each raw In ListValue(GetValue(data, "items"))
                         AddCatalogItem(items, raw)
                         Dim rels = RelatedAsins(raw)
@@ -876,21 +877,21 @@ Public Class MainForm
     End Function
 
     Private Async Function GetCatalogItemAsync(asin As String, included As String, accessToken As String) As Task(Of ApiResult)
-        Dim q As New List(Of KeyValuePair(Of String, String)) From {Pair("marketplaceIds", SelectedMarketplace().Id), Pair("includedData", included)}
-        If Not IsSandbox() Then q.Add(Pair("locale", SelectedMarketplace().Locale))
-        Return Await CallSpApiAsync("/catalog/2022-04-01/items/" & Encode(asin) & "?" & Query(q), HttpMethod.Get, Nothing, accessToken)
+        Dim q As New List(Of KeyValuePair(Of String, String)) From {QPair("marketplaceIds", SelectedMarketplace().Id), QPair("includedData", included)}
+        If Not IsSandbox() Then q.Add(QPair("locale", SelectedMarketplace().Locale))
+        Return Await CallSpApiAsync("/catalog/2022-04-01/items/" & Encode(asin) & "?" & BuildQuery(q), HttpMethod.Get, Nothing, accessToken)
     End Function
 
     Private Async Function SearchCatalogAsinsAsync(asins As List(Of String), included As String, accessToken As String) As Task(Of ApiResult)
         Dim q As New List(Of KeyValuePair(Of String, String)) From {
-            Pair("identifiers", String.Join(",", asins)), Pair("identifiersType", "ASIN"), Pair("marketplaceIds", SelectedMarketplace().Id), Pair("includedData", included)
+            QPair("identifiers", String.Join(",", asins)), QPair("identifiersType", "ASIN"), QPair("marketplaceIds", SelectedMarketplace().Id), QPair("includedData", included)
         }
-        If Not IsSandbox() Then q.Add(Pair("locale", SelectedMarketplace().Locale)) : q.Add(Pair("pageSize", "20"))
-        Return Await CallSpApiAsync("/catalog/2022-04-01/items?" & Query(q), HttpMethod.Get, Nothing, accessToken)
+        If Not IsSandbox() Then q.Add(QPair("locale", SelectedMarketplace().Locale)) : q.Add(QPair("pageSize", "20"))
+        Return Await CallSpApiAsync("/catalog/2022-04-01/items?" & BuildQuery(q), HttpMethod.Get, Nothing, accessToken)
     End Function
 
     Private Sub AddCatalogItem(items As Dictionary(Of String, Dictionary(Of String, Object)), value As Object)
-        Dim item = Dict(value)
+        Dim item = AsDict(value)
         Dim asin = StringValue(GetValue(item, "asin"))
         If asin <> "" Then items(asin) = item
     End Sub
@@ -898,11 +899,11 @@ Public Class MainForm
     Private Function RelatedAsins(value As Object) As Tuple(Of List(Of String), List(Of String))
         Dim parents As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
         Dim children As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
-        Dim item = Dict(value)
+        Dim item = AsDict(value)
         For Each groupObj In ListValue(GetValue(item, "relationships"))
-            Dim group = Dict(groupObj)
+            Dim group = AsDict(groupObj)
             For Each relObj In ListValue(GetValue(group, "relationships"))
-                Dim rel = Dict(relObj)
+                Dim rel = AsDict(relObj)
                 For Each a In ListValue(GetValue(rel, "parentAsins"))
                     If TypeOf a Is String Then parents.Add(CStr(a))
                 Next
@@ -948,11 +949,11 @@ Public Class MainForm
         Dim resource = If(idType = "ASIN", "items", "listings")
         Dim result = Await CallSpApiAsync("/products/fees/v0/" & resource & "/" & Encode(identifier) & "/feesEstimate", HttpMethod.Post, body)
         If result.Ok Then
-            Dim payload = Dict(GetValue(Dict(result.Data), "payload"))
-            Dim fee = Dict(GetValue(payload, "FeesEstimateResult"))
+            Dim payload = AsDict(GetValue(AsDict(result.Data), "payload"))
+            Dim fee = AsDict(GetValue(payload, "FeesEstimateResult"))
             Dim feeStatus = StringValue(GetValue(fee, "Status"))
             If feeStatus <> "" AndAlso feeStatus <> "Success" Then
-                Dim err = Dict(GetValue(fee, "Error"))
+                Dim err = AsDict(GetValue(fee, "Error"))
                 result.Ok = False : result.Status = 422 : result.StatusText = "Fee estimate " & feeStatus
                 result.Problem = New ApiProblem With {
                     .Code = If(StringValue(GetValue(err, "Code")) <> "", StringValue(GetValue(err, "Code")), "FEE_ESTIMATE_" & feeStatus.ToUpperInvariant()),
@@ -968,15 +969,15 @@ Public Class MainForm
 
     Private Async Function InventoryAsync() As Task(Of ApiResult)
         Dim q As New List(Of KeyValuePair(Of String, String)) From {
-            Pair("details", If(B("details"), "true", "false")), Pair("granularityType", "Marketplace"),
-            Pair("granularityId", SelectedMarketplace().Id), Pair("marketplaceIds", SelectedMarketplace().Id)
+            QPair("details", If(B("details"), "true", "false")), QPair("granularityType", "Marketplace"),
+            QPair("granularityId", SelectedMarketplace().Id), QPair("marketplaceIds", SelectedMarketplace().Id)
         }
         AddCsvParam(q, "sellerSkus", S("sellerSkus"), 50)
         Dim start = OptionalDate("startDateTime")
         If start <> "" AndAlso DateTimeOffset.Parse(start, CultureInfo.InvariantCulture).UtcDateTime < DateTime.UtcNow.AddMonths(-18) Then Throw New AppException("startDateTime cannot be earlier than 18 months before the request", 400, "INVENTORY_START_TOO_OLD")
         AddOptional(q, "startDateTime", start)
         AddOptional(q, "nextToken", S("inventoryNextToken"))
-        Return Await CallSpApiAsync("/fba/inventory/v1/summaries?" & Query(q))
+        Return Await CallSpApiAsync("/fba/inventory/v1/summaries?" & BuildQuery(q))
     End Function
 
     Private Async Function OrdersAsync() As Task(Of ApiResult)
@@ -989,18 +990,18 @@ Public Class MainForm
             If b > DateTimeOffset.UtcNow.AddMinutes(-2) Then Throw New AppException("createdBefore must be at least two minutes before the request time", 400, "ORDER_CREATED_BEFORE_TOO_RECENT")
         End If
         Dim q As New List(Of KeyValuePair(Of String, String)) From {
-            Pair("marketplaceIds", SelectedMarketplace().Id), Pair("createdAfter", createdAfter), Pair("includedData", OrderIncludedData())
+            QPair("marketplaceIds", SelectedMarketplace().Id), QPair("createdAfter", createdAfter), QPair("includedData", OrderIncludedData())
         }
-        If S("pageSize") <> "" Then q.Add(Pair("maxResultsPerPage", IntField("pageSize", 1, 100).ToString(CultureInfo.InvariantCulture)))
+        If S("pageSize") <> "" Then q.Add(QPair("maxResultsPerPage", IntField("pageSize", 1, 100).ToString(CultureInfo.InvariantCulture)))
         AddOptional(q, "createdBefore", createdBefore)
         Dim statuses = SplitValues(S("statuses"), 7)
         ValidateEnum(statuses, {"PENDING_AVAILABILITY", "PENDING", "UNSHIPPED", "PARTIALLY_SHIPPED", "SHIPPED", "CANCELLED", "UNFULFILLABLE"}, "fulfillmentStatuses")
         Dim fulfilled = SplitValues(S("fulfilledBy"), 2)
         ValidateEnum(fulfilled, {"MERCHANT", "AMAZON"}, "fulfilledBy")
-        If statuses.Count > 0 Then q.Add(Pair("fulfillmentStatuses", String.Join(",", statuses)))
-        If fulfilled.Count > 0 Then q.Add(Pair("fulfilledBy", String.Join(",", fulfilled)))
+        If statuses.Count > 0 Then q.Add(QPair("fulfillmentStatuses", String.Join(",", statuses)))
+        If fulfilled.Count > 0 Then q.Add(QPair("fulfilledBy", String.Join(",", fulfilled)))
         AddOptional(q, "paginationToken", S("orderPaginationToken"))
-        Return Await CallSpApiAsync("/orders/2026-01-01/orders?" & Query(q))
+        Return Await CallSpApiAsync("/orders/2026-01-01/orders?" & BuildQuery(q))
     End Function
 
     Private Async Function OrderAsync() As Task(Of ApiResult)
@@ -1022,22 +1023,22 @@ Public Class MainForm
         Dim nextToken = S("reportNextToken")
         Dim q As New List(Of KeyValuePair(Of String, String))()
         If nextToken <> "" Then
-            q.Add(Pair("nextToken", nextToken))
+            q.Add(QPair("nextToken", nextToken))
         Else
             AddCsvParam(q, "reportTypes", S("reportTypes"), 10)
             Dim statuses = SplitValues(S("processingStatuses"), 5)
             ValidateEnum(statuses, {"CANCELLED", "DONE", "FATAL", "IN_PROGRESS", "IN_QUEUE"}, "processingStatuses")
-            If statuses.Count > 0 Then q.Add(Pair("processingStatuses", String.Join(",", statuses)))
+            If statuses.Count > 0 Then q.Add(QPair("processingStatuses", String.Join(",", statuses)))
             Dim mids = SplitValues(S("reportMarketplaceIds"), 10)
             ValidateMarketplaceRegions(mids, "reportMarketplaceIds")
-            If mids.Count > 0 Then q.Add(Pair("marketplaceIds", String.Join(",", mids)))
-            If S("pageSize") <> "" Then q.Add(Pair("pageSize", IntField("pageSize", 1, 100).ToString(CultureInfo.InvariantCulture)))
+            If mids.Count > 0 Then q.Add(QPair("marketplaceIds", String.Join(",", mids)))
+            If S("pageSize") <> "" Then q.Add(QPair("pageSize", IntField("pageSize", 1, 100).ToString(CultureInfo.InvariantCulture)))
             Dim since = OptionalDate("createdSince")
             Dim until = OptionalDate("createdUntil")
             ValidateRange(since, until, "createdSince", "createdUntil")
             AddOptional(q, "createdSince", since) : AddOptional(q, "createdUntil", until)
         End If
-        Return Await CallSpApiAsync("/reports/2021-06-30/reports?" & Query(q))
+        Return Await CallSpApiAsync("/reports/2021-06-30/reports?" & BuildQuery(q))
     End Function
 
     Private Async Function CreateReportAsync() As Task(Of ApiResult)
@@ -1057,22 +1058,22 @@ Public Class MainForm
         Dim nextToken = S("feedNextToken")
         Dim q As New List(Of KeyValuePair(Of String, String))()
         If nextToken <> "" Then
-            q.Add(Pair("nextToken", nextToken))
+            q.Add(QPair("nextToken", nextToken))
         Else
             AddCsvParam(q, "feedTypes", S("feedTypes"), 10)
             Dim statuses = SplitValues(S("processingStatuses"), 5)
             ValidateEnum(statuses, {"CANCELLED", "DONE", "FATAL", "IN_PROGRESS", "IN_QUEUE"}, "processingStatuses")
-            If statuses.Count > 0 Then q.Add(Pair("processingStatuses", String.Join(",", statuses)))
+            If statuses.Count > 0 Then q.Add(QPair("processingStatuses", String.Join(",", statuses)))
             Dim mids = SplitValues(S("feedMarketplaceIds"), 10)
             ValidateMarketplaceRegions(mids, "feedMarketplaceIds")
-            If mids.Count > 0 Then q.Add(Pair("marketplaceIds", String.Join(",", mids)))
-            If S("pageSize") <> "" Then q.Add(Pair("pageSize", IntField("pageSize", 1, 100).ToString(CultureInfo.InvariantCulture)))
+            If mids.Count > 0 Then q.Add(QPair("marketplaceIds", String.Join(",", mids)))
+            If S("pageSize") <> "" Then q.Add(QPair("pageSize", IntField("pageSize", 1, 100).ToString(CultureInfo.InvariantCulture)))
             Dim since = OptionalDate("createdSince")
             Dim until = OptionalDate("createdUntil")
             ValidateRange(since, until, "createdSince", "createdUntil")
             AddOptional(q, "createdSince", since) : AddOptional(q, "createdUntil", until)
         End If
-        Return Await CallSpApiAsync("/feeds/2021-06-30/feeds?" & Query(q))
+        Return Await CallSpApiAsync("/feeds/2021-06-30/feeds?" & BuildQuery(q))
     End Function
 
     Private Async Function SubmitFeedAsync() As Task(Of ApiResult)
@@ -1089,7 +1090,7 @@ Public Class MainForm
 
         Dim document = Await CallSpApiAsync("/feeds/2021-06-30/documents", HttpMethod.Post, New Dictionary(Of String, Object) From {{"contentType", contentType}})
         If Not document.Ok Then Return document
-        Dim docData = Dict(document.Data)
+        Dim docData = AsDict(document.Data)
         Dim url = StringValue(GetValue(docData, "url"))
         Dim docId = StringValue(GetValue(docData, "feedDocumentId"))
         If url = "" OrElse docId = "" Then Throw New AppException("Amazon did not return a feed upload URL and document ID", 502, "FEED_UPLOAD_URL_MISSING")
@@ -1105,7 +1106,7 @@ Public Class MainForm
         End If
         Dim created = Await CallSpApiAsync("/feeds/2021-06-30/feeds", HttpMethod.Post, New Dictionary(Of String, Object) From {{"feedType", feedType}, {"marketplaceIds", mids.ToArray()}, {"inputFeedDocumentId", docId}})
         If created.Ok Then
-            Dim data = Dict(created.Data)
+            Dim data = AsDict(created.Data)
             data("inputFeedDocumentId") = docId
             data("verification") = If(IsSandbox(), "Static Sandbox validates Amazon's predefined examples and does not persist the upload like Production.", "Poll Feed status until DONE or FATAL, then inspect resultFeedDocumentId.")
             created.Data = data
@@ -1115,12 +1116,12 @@ Public Class MainForm
 
     Private Async Function InboundPlansAsync() As Task(Of ApiResult)
         Dim q As New List(Of KeyValuePair(Of String, String))()
-        If S("pageSize") <> "" Then q.Add(Pair("pageSize", IntField("pageSize", 1, 30).ToString(CultureInfo.InvariantCulture)))
+        If S("pageSize") <> "" Then q.Add(QPair("pageSize", IntField("pageSize", 1, 30).ToString(CultureInfo.InvariantCulture)))
         AddEnumParam(q, "sortBy", S("sortBy"), {"LAST_UPDATED_TIME", "CREATION_TIME"})
         AddEnumParam(q, "sortOrder", S("sortOrder"), {"ASC", "DESC"})
         AddEnumParam(q, "status", S("status"), {"ACTIVE", "VOIDED", "SHIPPED"})
         AddOptional(q, "paginationToken", S("inboundPaginationToken"))
-        Return Await CallSpApiAsync("/inbound/fba/2024-03-20/inboundPlans?" & Query(q))
+        Return Await CallSpApiAsync("/inbound/fba/2024-03-20/inboundPlans?" & BuildQuery(q))
     End Function
 
     Private Async Function PrepDetailsAsync() As Task(Of ApiResult)
@@ -1143,7 +1144,7 @@ Public Class MainForm
         Dim items = ParseItems(Required("items"), 2000, 500000)
         If mids(0) = "ATVPDKIKX0DER" Then
             For Each itemObj In items
-                Dim item = Dict(itemObj)
+                Dim item = AsDict(itemObj)
                 If StringValue(GetValue(item, "labelOwner")) = "AMAZON" Then Throw New AppException("Amazon does not accept labelOwner=AMAZON for US inbound-plan items. Use SELLER or NONE.", 400, "INVALID_US_LABEL_OWNER")
             Next
         End If
@@ -1169,7 +1170,7 @@ Public Class MainForm
         Dim parsed = ParseItems(Required("items"), 100, 10000)
         Dim quantities As New List(Of Object)()
         For Each raw In parsed
-            Dim item = Dict(raw)
+            Dim item = AsDict(raw)
             quantities.Add(New Dictionary(Of String, Object) From {{"msku", GetValue(item, "msku")}, {"quantity", GetValue(item, "quantity")}})
         Next
         Dim body As New Dictionary(Of String, Object) From {{"marketplaceId", SelectedMarketplace().Id}, {"labelType", labelType}, {"localeCode", SelectedMarketplace().Locale}, {"mskuQuantities", quantities.ToArray()}}
@@ -1190,19 +1191,19 @@ Public Class MainForm
         If labelType = "PALLET" AndAlso S("numberOfPallets") = "" Then Throw New AppException("numberOfPallets is required for PALLET labels", 400, "MISSING_NUMBER_OF_PALLETS")
         Dim pageType = If(S("shipmentPageType") = "", "PackageLabel_Thermal_NonPCP", S("shipmentPageType"))
         ValidateEnum(New List(Of String) From {pageType}, {"PackageLabel_Letter_2", "PackageLabel_Letter_4", "PackageLabel_Letter_6", "PackageLabel_Letter_6_CarrierLeft", "PackageLabel_A4_2", "PackageLabel_A4_4", "PackageLabel_Plain_Paper", "PackageLabel_Plain_Paper_CarrierBottom", "PackageLabel_Thermal", "PackageLabel_Thermal_Unified", "PackageLabel_Thermal_NonPCP", "PackageLabel_Thermal_No_Carrier_Rotation"}, "shipmentPageType")
-        Dim q As New List(Of KeyValuePair(Of String, String)) From {Pair("PageType", pageType), Pair("LabelType", labelType)}
+        Dim q As New List(Of KeyValuePair(Of String, String)) From {QPair("PageType", pageType), QPair("LabelType", labelType)}
         AddOptionalInteger(q, "NumberOfPackages", "numberOfPackages", 1)
         AddOptionalInteger(q, "NumberOfPallets", "numberOfPallets", 1)
         AddOptionalInteger(q, "PageSize", "shipmentPageSize", 1, 1000)
         AddOptionalInteger(q, "PageStartIndex", "pageStartIndex", 0)
         AddCsvParam(q, "PackageLabelsToPrint", S("packageLabelsToPrint"), 1000)
-        Return Await CallSpApiAsync("/fba/inbound/v0/shipments/" & Encode(Required("shipmentId")) & "/labels?" & Query(q))
+        Return Await CallSpApiAsync("/fba/inbound/v0/shipments/" & Encode(Required("shipmentId")) & "/labels?" & BuildQuery(q))
     End Function
 
     Private Async Function GetAndDownloadDocumentAsync(path As String, label As String) As Task(Of ApiResult)
         Dim metadata = Await CallSpApiAsync(path)
         If Not metadata.Ok Then Return metadata
-        Dim doc = Dict(metadata.Data)
+        Dim doc = AsDict(metadata.Data)
         Dim url = StringValue(GetValue(doc, "url"))
         If url = "" Then Throw New AppException("Amazon returned no URL for the " & label, 502, "DOCUMENT_URL_MISSING")
         ValidateAmazonDocumentUrl(url, label)
@@ -1254,7 +1255,7 @@ Public Class MainForm
 
     Private Function ApplyBusinessOutcome(operation As String, result As ApiResult) As ApiResult
         If Not result.Ok Then Return result
-        Dim data = Dict(result.Data)
+        Dim data = AsDict(result.Data)
         If operation = "feed" Then
             Dim status = StringValue(GetValue(data, "processingStatus"))
             If status = "FATAL" OrElse status = "CANCELLED" Then
@@ -1313,7 +1314,7 @@ Public Class MainForm
         Using response = outcome.Item1
             Dim data = ParseJson(Await response.Content.ReadAsStringAsync())
             If Not response.IsSuccessStatusCode Then Throw New AppException(ExtractMessage(data, "Amazon rejected the supplied LWA credentials"), CInt(response.StatusCode), ExtractCode(data, "LWA_AUTH_FAILED"), Json(data))
-            Dim dict = Dict(data)
+            Dim dict = AsDict(data)
             Dim token = StringValue(GetValue(dict, "access_token"))
             If token = "" Then Throw New AppException("Amazon returned no access token", 502, "LWA_TOKEN_MISSING", Json(data))
             Dim expires As Integer = 3600
@@ -1326,7 +1327,7 @@ Public Class MainForm
         If method Is Nothing Then method = HttpMethod.Get
         If accessToken = "" Then accessToken = (Await GetAccessTokenAsync()).Item1
         Dim url = Endpoint() & path
-        Dim retryMode = If(method = HttpMethod.Get, RetryMode.ReadRequest, RetryMode.WriteRequest)
+        Dim retryPolicy = If(method = HttpMethod.Get, RetryMode.ReadRequest, RetryMode.WriteRequest)
         Dim sw = Stopwatch.StartNew()
         Dim outcome As Tuple(Of HttpResponseMessage, Integer)
         Try
@@ -1338,7 +1339,7 @@ Public Class MainForm
                                                    req.Headers.TryAddWithoutValidation("User-Agent", "SP-API-Workbench/1.2 (Language=VB.NET; Platform=.NET Framework 4.8)")
                                                    If body IsNot Nothing Then req.Content = New StringContent(Serializer.Serialize(body), Encoding.UTF8, "application/json")
                                                    Return req
-                                               End Function, retryMode)
+                                               End Function, retryPolicy)
         Catch ex As Exception
             sw.Stop()
             Throw
@@ -1369,11 +1370,11 @@ Public Class MainForm
                 response.Dispose()
                 Await Task.Delay(delay)
             Catch ex As TaskCanceledException
-                If mode <> RetryMode.WriteRequest AndAlso attempt < maxAttempts Then Await Task.Delay(ClampDelay(750 * CInt(Math.Pow(2, attempt - 1)))) : Continue For
+                If mode <> RetryMode.WriteRequest AndAlso attempt < maxAttempts Then System.Threading.Thread.Sleep(ClampDelay(750 * CInt(Math.Pow(2, attempt - 1)))) : Continue For
                 If mode = RetryMode.WriteRequest Then Throw New AppException("The connection failed while sending an Amazon write request. Amazon may have received it even though no response reached the app.", 502, "AMBIGUOUS_WRITE_RESULT", ex.Message)
                 Throw New AppException("The request to Amazon timed out.", 502, "AMAZON_TIMEOUT", ex.Message)
             Catch ex As HttpRequestException
-                If mode <> RetryMode.WriteRequest AndAlso attempt < maxAttempts Then Await Task.Delay(ClampDelay(750 * CInt(Math.Pow(2, attempt - 1)))) : Continue For
+                If mode <> RetryMode.WriteRequest AndAlso attempt < maxAttempts Then System.Threading.Thread.Sleep(ClampDelay(750 * CInt(Math.Pow(2, attempt - 1)))) : Continue For
                 If mode = RetryMode.WriteRequest Then Throw New AppException("The connection failed while sending an Amazon write request. Verify Amazon state before resubmitting.", 502, "AMBIGUOUS_WRITE_RESULT", ex.Message)
                 Throw New AppException("The app could not reach Amazon.", 502, "AMAZON_NETWORK_ERROR", ex.Message)
             End Try
@@ -1430,10 +1431,10 @@ Public Class MainForm
     End Function
 
     Private Function ExtractCode(data As Object, fallback As String) As String
-        Dim d = Dict(data)
+        Dim d = AsDict(data)
         Dim errors = ListValue(GetValue(d, "errors"))
         If errors.Count > 0 Then
-            Dim first = Dict(errors(0))
+            Dim first = AsDict(errors(0))
             Dim c = StringValue(GetValue(first, "code"))
             If c <> "" Then Return c
         End If
@@ -1445,10 +1446,10 @@ Public Class MainForm
     End Function
 
     Private Function ExtractMessage(data As Object, fallback As String) As String
-        Dim d = Dict(data)
+        Dim d = AsDict(data)
         Dim errors = ListValue(GetValue(d, "errors"))
         If errors.Count > 0 Then
-            Dim first = Dict(errors(0))
+            Dim first = AsDict(errors(0))
             Dim m = StringValue(GetValue(first, "message"))
             If m <> "" Then Return m
         End If
@@ -1460,10 +1461,10 @@ Public Class MainForm
     End Function
 
     Private Function ExtractDetails(data As Object) As String
-        Dim d = Dict(data)
+        Dim d = AsDict(data)
         Dim errors = ListValue(GetValue(d, "errors"))
         If errors.Count > 0 Then
-            Dim first = Dict(errors(0))
+            Dim first = AsDict(errors(0))
             If first.ContainsKey("details") Then Return Json(GetValue(first, "details"))
         End If
         If d.ContainsKey("details") Then Return Json(GetValue(d, "details"))
@@ -1495,12 +1496,12 @@ Public Class MainForm
         Catch ex As Exception
             Throw New AppException("Feed content is not valid JSON", 400, "INVALID_FEED_JSON", ex.Message)
         End Try
-        Dim feed = Dict(parsed)
-        Dim header = Dict(GetValue(feed, "header"))
+        Dim feed = AsDict(parsed)
+        Dim header = AsDict(GetValue(feed, "header"))
         Dim messages = ListValue(GetValue(feed, "messages"))
         If StringValue(GetValue(header, "sellerId")) = "" OrElse StringValue(GetValue(header, "version")) = "" OrElse messages.Count = 0 Then Throw New AppException("JSON_LISTINGS_FEED requires header.sellerId, header.version, and at least one message", 400, "INVALID_JSON_LISTINGS_STRUCTURE")
         For i As Integer = 0 To messages.Count - 1
-            Dim msg = Dict(messages(i))
+            Dim msg = AsDict(messages(i))
             Dim id As Integer
             If Not Integer.TryParse(Convert.ToString(GetValue(msg, "messageId"), CultureInfo.InvariantCulture), id) OrElse id < 1 OrElse StringValue(GetValue(msg, "sku")) = "" OrElse StringValue(GetValue(msg, "operationType")) = "" Then Throw New AppException("Each JSON listings message requires a positive integer messageId, sku, and operationType", 400, "INVALID_JSON_LISTINGS_MESSAGE", "messageIndex=" & i.ToString())
         Next
@@ -1633,32 +1634,32 @@ Public Class MainForm
     Private Sub AddEnumParam(q As List(Of KeyValuePair(Of String, String)), key As String, value As String, allowed As IEnumerable(Of String))
         If value = "" Then Return
         ValidateEnum(New List(Of String) From {value}, allowed, key)
-        q.Add(Pair(key, value))
+        q.Add(QPair(key, value))
     End Sub
 
     Private Sub AddOptionalInteger(q As List(Of KeyValuePair(Of String, String)), queryKey As String, fieldKey As String, min As Integer, Optional max As Integer = Integer.MaxValue)
         If S(fieldKey) = "" Then Return
-        q.Add(Pair(queryKey, IntField(fieldKey, min, max).ToString(CultureInfo.InvariantCulture)))
+        q.Add(QPair(queryKey, IntField(fieldKey, min, max).ToString(CultureInfo.InvariantCulture)))
     End Sub
 
     Private Sub AddCsvParam(q As List(Of KeyValuePair(Of String, String)), key As String, value As String, max As Integer)
         Dim values = SplitValues(value, max)
-        If values.Count > 0 Then q.Add(Pair(key, String.Join(",", values)))
+        If values.Count > 0 Then q.Add(QPair(key, String.Join(",", values)))
     End Sub
 
     Private Sub AddOptional(q As List(Of KeyValuePair(Of String, String)), key As String, value As String)
-        If value <> "" Then q.Add(Pair(key, value))
+        If value <> "" Then q.Add(QPair(key, value))
     End Sub
 
     Private Sub AddOptionalObject(dict As Dictionary(Of String, Object), key As String, value As String)
         If value <> "" Then dict(key) = value
     End Sub
 
-    Private Function Pair(key As String, value As String) As KeyValuePair(Of String, String)
+    Private Function QPair(key As String, value As String) As KeyValuePair(Of String, String)
         Return New KeyValuePair(Of String, String)(key, value)
     End Function
 
-    Private Function Query(items As IEnumerable(Of KeyValuePair(Of String, String))) As String
+    Private Function BuildQuery(items As IEnumerable(Of KeyValuePair(Of String, String))) As String
         Return String.Join("&", items.Select(Function(p) Encode(p.Key) & "=" & Encode(p.Value)))
     End Function
 
@@ -1685,7 +1686,7 @@ Public Class MainForm
         End Try
     End Function
 
-    Private Function Dict(value As Object) As Dictionary(Of String, Object)
+    Private Function AsDict(value As Object) As Dictionary(Of String, Object)
         Dim d = TryCast(value, Dictionary(Of String, Object))
         If d IsNot Nothing Then Return d
         Return New Dictionary(Of String, Object)()
@@ -1800,30 +1801,30 @@ Public Class MainForm
         End If
 
         sb.AppendLine("SUCCESS")
-        Dim data = Dict(result.Data)
+        Dim data = AsDict(result.Data)
         Select Case operation
             Case "catalog"
                 Dim items = ListValue(GetValue(data, "items"))
                 sb.AppendLine(items.Count.ToString() & " catalogue record(s) returned")
                 For Each raw In items.Take(30)
-                    Dim item = Dict(raw)
+                    Dim item = AsDict(raw)
                     Dim asin = StringValue(GetValue(item, "asin"))
                     Dim title = CatalogTitle(item)
                     sb.AppendLine(asin & If(title = "", "", " - " & title))
                 Next
-                Dim family = Dict(GetValue(data, "family"))
+                Dim family = AsDict(GetValue(data, "family"))
                 If family.Count > 0 Then sb.AppendLine("Related family: " & Convert.ToString(GetValue(family, "returnedCount")) & " of " & Convert.ToString(GetValue(family, "requestedCount")) & " returned")
             Case "fees"
-                Dim payload = Dict(GetValue(data, "payload"))
-                Dim fee = Dict(GetValue(payload, "FeesEstimateResult"))
-                Dim estimate = Dict(GetValue(fee, "FeesEstimate"))
-                Dim total = Dict(GetValue(estimate, "TotalFeesEstimate"))
+                Dim payload = AsDict(GetValue(data, "payload"))
+                Dim fee = AsDict(GetValue(payload, "FeesEstimateResult"))
+                Dim estimate = AsDict(GetValue(fee, "FeesEstimate"))
+                Dim total = AsDict(GetValue(estimate, "TotalFeesEstimate"))
                 sb.AppendLine("Status: " & StringValue(GetValue(fee, "Status")))
                 If total.Count > 0 Then sb.AppendLine("Total fees: " & StringValue(GetValue(total, "CurrencyCode")) & " " & Convert.ToString(GetValue(total, "Amount"), CultureInfo.InvariantCulture))
                 For Each raw In ListValue(GetValue(estimate, "FeeDetailList"))
-                    Dim detail = Dict(raw)
-                    Dim amount = Dict(GetValue(detail, "FinalFee"))
-                    If amount.Count = 0 Then amount = Dict(GetValue(detail, "FeeAmount"))
+                    Dim detail = AsDict(raw)
+                    Dim amount = AsDict(GetValue(detail, "FinalFee"))
+                    If amount.Count = 0 Then amount = AsDict(GetValue(detail, "FeeAmount"))
                     sb.AppendLine("- " & StringValue(GetValue(detail, "FeeType")) & ": " & StringValue(GetValue(amount, "CurrencyCode")) & " " & Convert.ToString(GetValue(amount, "Amount"), CultureInfo.InvariantCulture))
                 Next
             Case "createReport"
@@ -1854,7 +1855,7 @@ Public Class MainForm
             Case "orders"
                 sb.AppendLine(ListValue(GetValue(data, "orders")).Count.ToString() & " order(s) returned")
             Case "inventory"
-                Dim payload = Dict(GetValue(data, "payload"))
+                Dim payload = AsDict(GetValue(data, "payload"))
                 sb.AppendLine(ListValue(GetValue(payload, "inventorySummaries")).Count.ToString() & " inventory record(s) returned")
             Case "reportDocument", "feedDocument", "itemLabels", "shipmentLabels", "billOfLading"
                 Dim u = FindDocumentUrl(data)
@@ -1868,7 +1869,7 @@ Public Class MainForm
 
     Private Function CatalogTitle(item As Dictionary(Of String, Object)) As String
         For Each raw In ListValue(GetValue(item, "summaries"))
-            Dim summary = Dict(raw)
+            Dim summary = AsDict(raw)
             Dim t = StringValue(GetValue(summary, "itemName"))
             If t <> "" Then Return t
         Next
@@ -1876,7 +1877,7 @@ Public Class MainForm
     End Function
 
     Private Sub ApplyReturnedIds(operation As String, dataObj As Object)
-        Dim data = Dict(dataObj)
+        Dim data = AsDict(dataObj)
         Select Case operation
             Case "createReport"
                 If StringValue(GetValue(data, "reportId")) <> "" Then FieldValues("reportId") = StringValue(GetValue(data, "reportId"))
@@ -1892,34 +1893,34 @@ Public Class MainForm
             Case "inboundPlans"
                 Dim plans = ListValue(GetValue(data, "inboundPlans"))
                 If plans.Count > 0 Then
-                    Dim id = StringValue(GetValue(Dict(plans(0)), "inboundPlanId"))
+                    Dim id = StringValue(GetValue(AsDict(plans(0)), "inboundPlanId"))
                     If id <> "" Then FieldValues("inboundPlanId") = id
                 End If
             Case "inboundPlan"
                 Dim shipments = ListValue(GetValue(data, "shipments"))
                 If shipments.Count > 0 Then
-                    Dim id = StringValue(GetValue(Dict(shipments(0)), "shipmentId"))
+                    Dim id = StringValue(GetValue(AsDict(shipments(0)), "shipmentId"))
                     If id <> "" Then FieldValues("shipmentId") = id
                 End If
             Case "orders"
                 Dim orders = ListValue(GetValue(data, "orders"))
                 If orders.Count > 0 Then
-                    Dim id = StringValue(GetValue(Dict(orders(0)), "orderId"))
+                    Dim id = StringValue(GetValue(AsDict(orders(0)), "orderId"))
                     If id <> "" Then FieldValues("orderId") = id
                 End If
         End Select
     End Sub
 
     Private Function FindDocumentUrl(dataObj As Object) As String
-        Dim data = Dict(dataObj)
+        Dim data = AsDict(dataObj)
         Dim direct = StringValue(GetValue(data, "url"))
         If direct <> "" Then Return direct
         Dim downloads = ListValue(GetValue(data, "documentDownloads"))
         If downloads.Count > 0 Then
-            Dim uri = StringValue(GetValue(Dict(downloads(0)), "uri"))
+            Dim uri = StringValue(GetValue(AsDict(downloads(0)), "uri"))
             If uri <> "" Then Return uri
         End If
-        Dim payload = Dict(GetValue(data, "payload"))
+        Dim payload = AsDict(GetValue(data, "payload"))
         For Each key In {"DownloadURL", "downloadURL", "downloadUrl"}
             Dim u = StringValue(GetValue(payload, key))
             If u <> "" Then Return u
