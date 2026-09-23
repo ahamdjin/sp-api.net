@@ -467,6 +467,14 @@ Public Class MainForm
             .Padding = New Padding(3, 3, 3, 3)
         }
 
+        Dim btnCopyResult As New Button With {
+            .Text = "Copy result",
+            .AutoSize = True,
+            .Padding = New Padding(8, 2, 8, 2)
+        }
+        AddHandler btnCopyResult.Click, Sub(sender, e) CopyTextToClipboard(txtResult.Text, "Result")
+        resultActions.Controls.Add(btnCopyResult)
+
         btnNextStep.Text = "Next step"
         btnNextStep.AutoSize = True
         btnNextStep.Padding = New Padding(8, 2, 8, 2)
@@ -495,6 +503,14 @@ Public Class MainForm
         txtResult.Font = New Font("Consolas", 9.0F)
         resultTab.Controls.Add(txtResult)
         txtResult.BringToFront()
+
+        Dim btnCopyRaw As New Button With {
+            .Text = "Copy raw response",
+            .Dock = DockStyle.Bottom,
+            .Height = 34
+        }
+        AddHandler btnCopyRaw.Click, Sub(sender, e) CopyTextToClipboard(txtRaw.Text, "Raw response")
+        rawTab.Controls.Add(btnCopyRaw)
 
         txtRaw.Dock = DockStyle.Fill
         txtRaw.Multiline = True
@@ -2376,8 +2392,12 @@ Public Class MainForm
                 Dim payload = AsDict(GetValue(data, "payload"))
                 sb.AppendLine(ListValue(GetValue(payload, "inventorySummaries")).Count.ToString() & " inventory record(s) returned")
             Case "reportDocument", "feedDocument", "itemLabels", "shipmentLabels", "billOfLading"
-                Dim u = FindDocumentUrl(data)
-                If u <> "" Then sb.AppendLine("Document URL returned and ready to open/download.")
+                Dim documentCount = FindDocumentUrls(data).Count
+                If documentCount = 1 Then
+                    sb.AppendLine("1 document URL returned and ready to open/download.")
+                ElseIf documentCount > 1 Then
+                    sb.AppendLine(documentCount.ToString(CultureInfo.InvariantCulture) & " document URLs returned. Choose the document beside the Open button.")
+                End If
         End Select
         Dim nextStep = StringValue(GetValue(data, "nextStep"))
         If nextStep <> "" Then sb.AppendLine().AppendLine("Next: " & nextStep)
@@ -2530,6 +2550,16 @@ Public Class MainForm
             Next
         Next
         SelectOperation(operationId)
+    End Sub
+
+    Private Sub CopyTextToClipboard(value As String, label As String)
+        If String.IsNullOrWhiteSpace(value) Then Return
+        Try
+            Clipboard.SetText(value)
+            lblMeta.Text = label & " copied to clipboard."
+        Catch ex As Exception
+            MessageBox.Show("Could not copy to the clipboard: " & ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        End Try
     End Sub
 
     Private Sub OpenDocument(sender As Object, e As EventArgs)
