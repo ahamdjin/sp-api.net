@@ -438,6 +438,7 @@ Public Class MainForm
         requestPanel.WrapContents = False
         requestPanel.AutoScroll = True
         requestPanel.Padding = New Padding(3)
+        AddHandler requestPanel.Resize, Sub(sender, e) ResizeRequestFields()
         requestHost.Controls.Add(requestPanel)
         requestPanel.BringToFront()
 
@@ -777,6 +778,33 @@ Public Class MainForm
         host.Controls.Add(combo)
         requestPanel.Controls.Add(host)
         FieldControls(key) = combo
+    End Sub
+
+    Private Sub ResizeRequestFields()
+        If requestPanel Is Nothing Then Return
+        Dim availableWidth = Math.Max(580, requestPanel.ClientSize.Width - 35)
+
+        For Each control As Control In requestPanel.Controls
+            Dim panel = TryCast(control, Panel)
+            If panel IsNot Nothing Then
+                panel.Width = availableWidth
+                For Each child As Control In panel.Controls
+                    If TypeOf child Is TextBox OrElse TypeOf child Is ComboBox Then
+                        child.Width = Math.Max(540, availableWidth - 8)
+                    End If
+                Next
+                Continue For
+            End If
+
+            Dim label = TryCast(control, Label)
+            If label IsNot Nothing Then
+                label.MaximumSize = New Size(availableWidth, 0)
+                Continue For
+            End If
+
+            Dim check = TryCast(control, CheckBox)
+            If check IsNot Nothing Then check.MaximumSize = New Size(availableWidth, 0)
+        Next
     End Sub
 
     Private Sub AddSandboxExampleButton()
