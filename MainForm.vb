@@ -282,6 +282,34 @@ Public Class MainForm
         }
         If FindDocumentUrls(testDocuments).Count <> 2 Then Throw New InvalidOperationException("All returned document links must remain accessible.")
 
+        If Not ValidIsoInstant("2026-09-23T10:00:00Z") Then Throw New InvalidOperationException("Valid ISO timestamp was rejected.")
+        If ValidIsoInstant("2026-09-23 10:00:00") Then Throw New InvalidOperationException("Timestamp without explicit timezone must be rejected.")
+
+        Dim csv = ParseCsvLine("""SKU,ONE"", 2, SELLER, SELLER")
+        If csv.Count <> 4 OrElse csv(0) <> "SKU,ONE" OrElse csv(1) <> "2" Then Throw New InvalidOperationException("Quoted CSV item parsing is incorrect.")
+
+        If NormalizeIncludedData(DefaultCatalogData) <> DefaultCatalogData Then Throw New InvalidOperationException("Default Catalog datasets changed unexpectedly.")
+        Dim invalidDatasetRejected As Boolean = False
+        Try
+            NormalizeIncludedData("summaries,notARealDataset")
+        Catch ex As AppException
+            invalidDatasetRejected = (ex.Code = "INVALID_CATALOG_INCLUDED_DATA")
+        End Try
+        If Not invalidDatasetRejected Then Throw New InvalidOperationException("Invalid Catalog includedData must be rejected.")
+
+        Dim tooManyValuesRejected As Boolean = False
+        Try
+            SplitValues(String.Join(",", Enumerable.Range(1, 26).Select(Function(i) "M" & i.ToString(CultureInfo.InvariantCulture))), 25)
+        Catch ex As AppException
+            tooManyValuesRejected = (ex.Code = "TOO_MANY_VALUES")
+        End Try
+        If Not tooManyValuesRejected Then Throw New InvalidOperationException("25-value marketplace limit guard is not working.")
+
+        CachedAccessToken = "test-token"
+        CachedAccessTokenExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(10)
+        InvalidateConnectionState()
+        If CachedAccessToken <> "" Then Throw New InvalidOperationException("Credential/context changes must clear the cached access token.")
+
         cboEnvironment.SelectedIndex = 0
         SelectMarketplaceById("ATVPDKIKX0DER")
         SelectOperation("catalog")
