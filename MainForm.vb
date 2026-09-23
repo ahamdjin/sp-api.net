@@ -725,6 +725,9 @@ Public Class MainForm
 
     Private Function OperationHelp(operation As String) As String
         Select Case operation
+            Case "connection"
+                sb.AppendLine("LWA credentials accepted and the " & EnvironmentName() & " Sellers API endpoint responded successfully.")
+                sb.AppendLine("Marketplace: " & SelectedMarketplace().Name & " (" & SelectedMarketplace().Id & ")")
             Case "catalog" : Return "Find a catalogue item by ASIN/SKU/other identifier, or search by keywords. Related ASIN fetching is optional."
             Case "fees" : Return "Estimate Amazon selling fees for one ASIN or seller SKU at the price and fulfilment method you enter."
             Case "inventory" : Return "Read FBA inventory summaries. Seller SKUs and changed-since are optional filters."
@@ -958,14 +961,28 @@ Public Class MainForm
         Try
             Dim token = Await GetAccessTokenAsync()
             Dim probe = Await CallSpApiAsync("/sellers/v1/marketplaceParticipations", HttpMethod.Get, Nothing, token.Item1)
-            If Not probe.Ok Then Throw New AppException(If(probe.Problem IsNot Nothing, probe.Problem.Message, "Connection failed"), probe.Status, If(probe.Problem IsNot Nothing, probe.Problem.Code, "CONNECTION_FAILED"))
+            If Not probe.Ok Then
+                ConnectionVerified = False
+                lblConnection.Text = "Connection failed - " & If(probe.Problem IsNot Nothing, probe.Problem.Message, probe.StatusText)
+                lblConnection.ForeColor = Color.DarkRed
+                ShowResult("connection", probe)
+                Return
+            End If
+
             ConnectionVerified = True
             lblConnection.Text = "Connected to " & EnvironmentName() & " - " & SelectedMarketplace().Name
             lblConnection.ForeColor = Color.DarkGreen
+            ShowResult("connection", probe)
+        Catch ex As AppException
+            ConnectionVerified = False
+            lblConnection.Text = "Connection failed - " & ex.Message
+            lblConnection.ForeColor = Color.DarkRed
+            ShowResult("connection", LocalFailure(ex))
         Catch ex As Exception
             ConnectionVerified = False
             lblConnection.Text = "Connection failed - " & ex.Message
             lblConnection.ForeColor = Color.DarkRed
+            ShowResult("connection", LocalFailure(New AppException(ex.Message, 500, "CONNECTION_TEST_FAILED", ex.ToString())))
         Finally
             ToggleBusy(False, "")
         End Try
