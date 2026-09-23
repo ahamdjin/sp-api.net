@@ -342,6 +342,15 @@ Public Class MainForm
         End Try
         If Not tooManyValuesRejected Then Throw New InvalidOperationException("25-value marketplace limit guard is not working.")
 
+        ValidateContentType("application/json; charset=UTF-8")
+        Dim invalidContentTypeRejected As Boolean = False
+        Try
+            ValidateContentType("not a media type <>")
+        Catch ex As AppException
+            invalidContentTypeRejected = (ex.Code = "INVALID_CONTENT_TYPE")
+        End Try
+        If Not invalidContentTypeRejected Then Throw New InvalidOperationException("Invalid feed Content-Type must be rejected before an Amazon write.")
+
         CachedAccessToken = "test-token"
         CachedAccessTokenExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(10)
         InvalidateConnectionState()
@@ -1699,6 +1708,7 @@ Public Class MainForm
         Dim removed = New HashSet(Of String)({"POST_PRODUCT_DATA", "POST_INVENTORY_AVAILABILITY_DATA", "POST_PRODUCT_OVERRIDES_DATA", "POST_PRODUCT_PRICING_DATA", "POST_PRODUCT_IMAGE_DATA", "POST_PRODUCT_RELATIONSHIP_DATA", "POST_FLAT_FILE_INVLOADER_DATA", "POST_FLAT_FILE_BOOKLOADER_DATA", "POST_FLAT_FILE_CONVERGENCE_LISTINGS_DATA", "POST_FLAT_FILE_LISTINGS_DATA", "POST_FLAT_FILE_PRICEANDQUANTITYONLY_UPDATE_DATA", "POST_UIEE_BOOKLOADER_DATA"}, StringComparer.Ordinal)
         If Not IsSandbox() AndAlso removed.Contains(feedType) Then Throw New AppException("This legacy listings feed type was removed by Amazon on July 31, 2025. Use JSON_LISTINGS_FEED in Production.", 400, "REMOVED_LISTING_FEED_TYPE")
         Dim contentType = If(S("contentType") = "", "application/json; charset=UTF-8", S("contentType"))
+        ValidateContentType(contentType)
         Dim content = Required("content")
         Dim mids = SplitValues(S("feedMarketplaceIds"), 25)
         If mids.Count = 0 Then mids.Add(SelectedMarketplace().Id)
@@ -1883,7 +1893,7 @@ Public Class MainForm
             Dim status = StringValue(GetValue(data, "processingStatus"))
             If status = "FATAL" OrElse status = "CANCELLED" Then
                 result.Ok = False : result.Status = 422 : result.StatusText = "Feed processing " & status.ToLowerInvariant()
-                result.Problem = New ApiProblem With {.Code = "FEED_" & status, .Message = If(status = "FATAL", "Amazon aborted the feed during processing.", "Amazon cancelled the feed before processing completed."), .Details = If(StringValue(GetValue(data, "resultFeedDocumentId")) = "", "", "resultFeedDocumentId: " & StringValue(GetValue(data, "resultFeedDocumentId"))), .Action = "Review the feed processing report before resubmitting.", .Retryable = False}
+                result.Problem = New ApiProblem With {.Code = "FEED_" & status, .Message = If(status = "FATAL", "Amazon aborted the feed during processing. Some records may or may not have been applied.", "Amazon cancelled the feed before processing completed."), .Details = If(StringValue(GetValue(data, "resultFeedDocumentId")) = "", "", "resultFeedDocumentId: " & StringValue(GetValue(data, "resultFeedDocumentId"))), .Action = "Review the feed processing report before resubmitting.", .Retryable = False}
             ElseIf status = "DONE" Then
                 data("nextStep") = "Use Feed processing report with resultFeedDocumentId before treating individual records as successful."
             ElseIf status = "IN_QUEUE" OrElse status = "IN_PROGRESS" Then
@@ -1902,8 +1912,21 @@ Public Class MainForm
         ElseIf operation = "inboundOperationStatus" Then
             Dim status = StringValue(GetValue(data, "operationStatus"))
             If status = "FAILED" Then
+                Dim problems = ListValue(GetValue(data, "operationProblems"))
+                Dim firstProblem = If(problems.Count > 0, AsDict(problems(0)), New Dictionary(Of String, Object)())
+                Dim problemCode = StringValue(GetValue(firstProblem, "code"))
+                Dim problemMessage = StringValue(GetValue(firstProblem, "message"))
+                If problemCode = "" Then problemCode = "INBOUND_OPERATION_FAILED"
+                If problemMessage = "" Then problemMessage = "The asynchronous Fulfillment Inbound operation failed."
+
                 result.Ok = False : result.Status = 422 : result.StatusText = "Inbound operation failed"
-                result.Problem = New ApiProblem With {.Code = "INBOUND_OPERATION_FAILED", .Message = "The asynchronous Fulfillment Inbound operation failed.", .Details = Json(GetValue(data, "operationProblems")), .Action = "Correct every operationProblem before starting another write.", .Retryable = False}
+                result.Problem = New ApiProblem With {
+                    .Code = problemCode,
+                    .Message = problemMessage,
+                    .Details = Json(GetValue(data, "operationProblems")),
+                    .Action = "Read every operationProblem, correct the inbound data it identifies, then start a new valid operation. Do not assume the original write was applied.",
+                    .Retryable = False
+                }
             ElseIf status = "IN_PROGRESS" Then
                 data("nextStep") = "Poll Operation status again before continuing."
             ElseIf status = "SUCCESS" AndAlso ListValue(GetValue(data, "operationProblems")).Count > 0 Then
@@ -2097,12 +2120,17 @@ Public Class MainForm
         Dim key = (code & " " & message).ToLowerInvariant()
         If key.Contains("invalid_grant") OrElse key.Contains("refresh token") Then Return "Reconnect/self-authorize the seller account to obtain a fresh refresh token."
         If key.Contains("invalid_client") Then Return "Verify the LWA client ID and client secret belong to the same SP-API app."
-        If status = 401 OrElse status = 403 OrElse key.Contains("unauthorized") OrElse key.Contains("accessdenied") Then Return "Verify seller authorization and the Amazon role required by this operation."
+        If key.Contains("expiredtoken") OrElse key.Contains("expired token") Then Return "Request a fresh LWA access token. If a fresh token is also rejected, reauthorize the seller account."
+        If status = 401 OrElse status = 403 OrElse key.Contains("unauthorized") OrElse key.Contains("accessdenied") OrElse key.Contains("access denied") Then Return "Verify seller authorization and the Amazon role required by this operation. Reauthorize after changing roles."
         If key.Contains("could not match input arguments") OrElse key.Contains("sandbox request") Then Return "Amazon's static Sandbox accepts predefined request examples. Use the exact Sandbox values shown in the app."
-        If status = 429 OrElse key.Contains("throttl") Then Return "Slow the request rate and retry after the throttle window."
-        If status = 400 Then Return "Check required fields, IDs, date ranges, enum values, marketplace, and URL encoding."
-        If status = 404 Then Return "Verify the resource ID, marketplace, and environment. Sandbox and Production IDs are not interchangeable."
-        If status >= 500 AndAlso method <> HttpMethod.Get Then Return "Do not immediately resubmit this write. Verify the related Amazon resource/job first."
+        If status = 429 OrElse key.Contains("throttl") OrElse key.Contains("quota") Then Return "Slow the request rate and honor Retry-After / x-amzn-RateLimit-Limit before retrying."
+        If status = 400 OrElse key.Contains("badrequest") OrElse key.Contains("invalidinput") OrElse key.Contains("invalid input") Then Return "Check required fields, IDs, date ranges, enum values, marketplace, and URL encoding."
+        If status = 404 Then Return "Verify the resource ID, marketplace, and environment. Sandbox IDs and Production IDs are not interchangeable."
+        If status = 409 Then Return "Re-read the current Amazon resource state, then retry only if the requested transition is still valid."
+        If status = 413 Then Return "Reduce the request or document size and submit it in smaller supported batches."
+        If status = 415 Then Return "Use the Content-Type required by this operation and make sure the body format matches it."
+        If status = 422 Then Return "The request is syntactically valid but violates an Amazon business rule. Read the error details, correct the data/state, and retry."
+        If status >= 500 AndAlso method <> HttpMethod.Get Then Return "Amazon returned a server error for a write. Do not immediately resubmit it; verify the related Amazon resource/job first."
         If retryable OrElse status >= 500 Then Return "Retry with backoff. Keep the Amazon request ID if the error persists."
         Return "Read the Amazon error details and request ID, correct the condition, then retry."
     End Function
@@ -2142,9 +2170,17 @@ Public Class MainForm
         Dim errors = ListValue(GetValue(d, "errors"))
         If errors.Count > 0 Then
             Dim first = AsDict(errors(0))
-            If first.ContainsKey("details") Then Return Json(GetValue(first, "details"))
+            If first.ContainsKey("details") Then
+                Dim detailValue = GetValue(first, "details")
+                If TypeOf detailValue Is String Then Return CStr(detailValue)
+                Return Json(detailValue)
+            End If
         End If
-        If d.ContainsKey("details") Then Return Json(GetValue(d, "details"))
+        If d.ContainsKey("details") Then
+            Dim detailValue = GetValue(d, "details")
+            If TypeOf detailValue Is String Then Return CStr(detailValue)
+            Return Json(detailValue)
+        End If
         Return ""
     End Function
 
@@ -2163,6 +2199,13 @@ Public Class MainForm
         If unknown.Count > 0 Then Throw New AppException(key & " contains unsupported marketplace IDs: " & String.Join(",", unknown), 400, "UNSUPPORTED_MARKETPLACE")
         Dim wrong = ids.Where(Function(id) Marketplaces.First(Function(m) m.Id = id).Region <> selected.Region).ToList()
         If wrong.Count > 0 Then Throw New AppException(key & " must use marketplaces in the same SP-API selling region as the selected marketplace", 400, "MARKETPLACE_REGION_MISMATCH", String.Join(",", wrong))
+    End Sub
+
+    Private Sub ValidateContentType(contentType As String)
+        Dim parsed As MediaTypeHeaderValue = Nothing
+        If Not MediaTypeHeaderValue.TryParse(contentType, parsed) OrElse parsed Is Nothing OrElse String.IsNullOrWhiteSpace(parsed.MediaType) Then
+            Throw New AppException("contentType is not a valid HTTP media type", 400, "INVALID_CONTENT_TYPE", contentType)
+        End If
     End Sub
 
     Private Sub ValidateJsonListingsFeed(contentType As String, content As String)
@@ -2463,8 +2506,15 @@ Public Class MainForm
             retryable = True
         End If
 
+        Dim statusText = If(ex.Status >= 500, "Local / network error", "Local validation error")
+        If key.Contains("invalid_grant") OrElse key.Contains("invalid_client") OrElse key.Contains("lwa_") OrElse key.Contains("refresh token") Then
+            statusText = "Amazon LWA authentication error"
+        ElseIf ex.Code = "AMBIGUOUS_WRITE_RESULT" Then
+            statusText = "Ambiguous Amazon write result"
+        End If
+
         Return New ApiResult With {
-            .Ok = False, .Status = ex.Status, .StatusText = If(ex.Status >= 500, "Local / network error", "Local validation error"), .ErrorMessage = ex.Message,
+            .Ok = False, .Status = ex.Status, .StatusText = statusText, .ErrorMessage = ex.Message,
             .Problem = New ApiProblem With {.Code = ex.Code, .Message = ex.Message, .Details = ex.Details, .Action = action, .Retryable = retryable}
         }
     End Function
