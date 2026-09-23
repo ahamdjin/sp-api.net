@@ -79,6 +79,8 @@ Public Class MainForm
         Public Property RateLimit As String = ""
         Public Property DurationMs As Long
         Public Property Attempts As Integer
+        Public Property RequestMethod As String = ""
+        Public Property RequestPath As String = ""
         Public Property Data As Object
         Public Property Problem As ApiProblem
         Public Property ErrorMessage As String = ""
@@ -1911,6 +1913,7 @@ Public Class MainForm
                 .Ok = response.IsSuccessStatusCode, .Status = CInt(response.StatusCode), .StatusText = response.ReasonPhrase,
                 .RequestId = Header(response, "x-amzn-requestid"), .GatewayId = Header(response, "x-amz-apigw-id"),
                 .TraceId = Header(response, "x-amzn-trace-id"), .RateLimit = Header(response, "x-amzn-ratelimit-limit"),
+                .RequestMethod = method.Method, .RequestPath = path,
                 .Data = data, .DurationMs = sw.ElapsedMilliseconds, .Attempts = outcome.Item2
             }
             If Not result.Ok Then
@@ -2391,10 +2394,17 @@ Public Class MainForm
     Private Sub ShowResult(operation As String, result As ApiResult)
         LastResult = result
         lblMeta.Text = result.Status.ToString(CultureInfo.InvariantCulture) & " " & result.StatusText & If(result.DurationMs > 0, "  |  " & result.DurationMs.ToString(CultureInfo.InvariantCulture) & " ms", "") & If(result.RequestId <> "", "  |  Request " & result.RequestId, "") & If(result.RateLimit <> "", "  |  " & result.RateLimit & " req/s", "")
+        Dim requestInfo As New Dictionary(Of String, Object) From {
+            {"method", If(result.RequestMethod = "", Nothing, result.RequestMethod)},
+            {"path", If(result.RequestPath = "", Nothing, result.RequestPath)},
+            {"environment", EnvironmentName()},
+            {"marketplaceId", If(cboMarketplace.SelectedItem Is Nothing, Nothing, SelectedMarketplace().Id)}
+        }
         Dim envelope As New Dictionary(Of String, Object) From {
             {"ok", result.Ok}, {"status", result.Status}, {"statusText", result.StatusText}, {"requestId", If(result.RequestId = "", Nothing, result.RequestId)},
             {"gatewayId", If(result.GatewayId = "", Nothing, result.GatewayId)}, {"traceId", If(result.TraceId = "", Nothing, result.TraceId)},
-            {"rateLimit", If(result.RateLimit = "", Nothing, result.RateLimit)}, {"durationMs", result.DurationMs}, {"attempts", result.Attempts}, {"data", result.Data}
+            {"rateLimit", If(result.RateLimit = "", Nothing, result.RateLimit)}, {"durationMs", result.DurationMs}, {"attempts", result.Attempts},
+            {"request", requestInfo}, {"data", result.Data}
         }
         If result.Problem IsNot Nothing Then envelope("problem") = New Dictionary(Of String, Object) From {{"code", result.Problem.Code}, {"message", result.Problem.Message}, {"details", result.Problem.Details}, {"action", result.Problem.Action}, {"retryable", result.Problem.Retryable}}
         txtRaw.Text = PrettyJson(envelope)
@@ -2439,6 +2449,7 @@ Public Class MainForm
             Case "connection"
                 sb.AppendLine("LWA credentials accepted and the " & EnvironmentName() & " Sellers API endpoint responded successfully.")
                 sb.AppendLine("Marketplace: " & SelectedMarketplace().Name & " (" & SelectedMarketplace().Id & ")")
+                sb.AppendLine("Endpoint: " & Endpoint())
             Case "catalog"
                 Dim items = ListValue(GetValue(data, "items"))
                 sb.AppendLine(items.Count.ToString() & " catalogue record(s) returned")
