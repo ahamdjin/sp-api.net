@@ -1,0 +1,134 @@
+            Case "catalog"
+                Dim items = ListValue(GetValue(data, "items"))
+                sb.AppendLine(items.Count.ToString() & " catalogue record(s) returned")
+                For Each raw In items.Take(30)
+                    Dim item = Dict(raw)
+                    Dim asin = StringValue(GetValue(item, "asin"))
+                    Dim title = CatalogTitle(item)
+                    sb.AppendLine(asin & If(title = "", "", " - " & title))
+                Next
+                Dim family = Dict(GetValue(data, "family"))
+                If family.Count > 0 Then sb.AppendLine("Related family: " & Convert.ToString(GetValue(family, "returnedCount")) & " of " & Convert.ToString(GetValue(family, "requestedCount")) & " returned")
+            Case "fees"
+                Dim payload = Dict(GetValue(data, "payload"))
+                Dim fee = Dict(GetValue(payload, "FeesEstimateResult"))
+                Dim estimate = Dict(GetValue(fee, "FeesEstimate"))
+                Dim total = Dict(GetValue(estimate, "TotalFeesEstimate"))
+                sb.AppendLine("Status: " & StringValue(GetValue(fee, "Status")))
+                If total.Count > 0 Then sb.AppendLine("Total fees: " & StringValue(GetValue(total, "CurrencyCode")) & " " & Convert.ToString(GetValue(total, "Amount"), CultureInfo.InvariantCulture))
+                For Each raw In ListValue(GetValue(estimate, "FeeDetailList"))
+                    Dim detail = Dict(raw)
+                    Dim amount = Dict(GetValue(detail, "FinalFee"))
+                    If amount.Count = 0 Then amount = Dict(GetValue(detail, "FeeAmount"))
+                    sb.AppendLine("- " & StringValue(GetValue(detail, "FeeType")) & ": " & StringValue(GetValue(amount, "CurrencyCode")) & " " & Convert.ToString(GetValue(amount, "Amount"), CultureInfo.InvariantCulture))
+                Next
+            Case "createReport"
+                sb.AppendLine("Report ID: " & StringValue(GetValue(data, "reportId")))
+            Case "report"
+                sb.AppendLine("Report ID: " & StringValue(GetValue(data, "reportId")))
+                sb.AppendLine("Status: " & StringValue(GetValue(data, "processingStatus")))
+                If StringValue(GetValue(data, "reportDocumentId")) <> "" Then sb.AppendLine("Report document ID: " & StringValue(GetValue(data, "reportDocumentId")))
+            Case "submitFeed"
+                sb.AppendLine("Feed ID: " & StringValue(GetValue(data, "feedId")))
+                sb.AppendLine("Input feed document ID: " & StringValue(GetValue(data, "inputFeedDocumentId")))
+            Case "feed"
+                sb.AppendLine("Feed ID: " & StringValue(GetValue(data, "feedId")))
+                sb.AppendLine("Status: " & StringValue(GetValue(data, "processingStatus")))
+                If StringValue(GetValue(data, "resultFeedDocumentId")) <> "" Then sb.AppendLine("Result feed document ID: " & StringValue(GetValue(data, "resultFeedDocumentId")))
+            Case "createInboundPlan"
+                sb.AppendLine("Inbound plan ID: " & StringValue(GetValue(data, "inboundPlanId")))
+                sb.AppendLine("Operation ID: " & StringValue(GetValue(data, "operationId")))
+            Case "inboundOperationStatus"
+                sb.AppendLine("Operation ID: " & StringValue(GetValue(data, "operationId")))
+                sb.AppendLine("Status: " & StringValue(GetValue(data, "operationStatus")))
+            Case "reports"
+                sb.AppendLine(ListValue(GetValue(data, "reports")).Count.ToString() & " report job(s) returned")
+            Case "feeds"
+                sb.AppendLine(ListValue(GetValue(data, "feeds")).Count.ToString() & " feed job(s) returned")
+            Case "inboundPlans"
+                sb.AppendLine(ListValue(GetValue(data, "inboundPlans")).Count.ToString() & " inbound plan(s) returned")
+            Case "orders"
+                sb.AppendLine(ListValue(GetValue(data, "orders")).Count.ToString() & " order(s) returned")
+            Case "inventory"
+                Dim payload = Dict(GetValue(data, "payload"))
+                sb.AppendLine(ListValue(GetValue(payload, "inventorySummaries")).Count.ToString() & " inventory record(s) returned")
+            Case "reportDocument", "feedDocument", "itemLabels", "shipmentLabels", "billOfLading"
+                Dim u = FindDocumentUrl(data)
+                If u <> "" Then sb.AppendLine("Document URL returned and ready to open/download.")
+        End Select
+        Dim nextStep = StringValue(GetValue(data, "nextStep"))
+        If nextStep <> "" Then sb.AppendLine().AppendLine("Next: " & nextStep)
+        sb.AppendLine().AppendLine("Complete returned data:").AppendLine(PrettyJson(result.Data))
+        Return sb.ToString()
+    End Function
+
+    Private Function CatalogTitle(item As Dictionary(Of String, Object)) As String
+        For Each raw In ListValue(GetValue(item, "summaries"))
+            Dim summary = Dict(raw)
+            Dim t = StringValue(GetValue(summary, "itemName"))
+            If t <> "" Then Return t
+        Next
+        Return ""
+    End Function
+
+    Private Sub ApplyReturnedIds(operation As String, dataObj As Object)
+        Dim data = Dict(dataObj)
+        Select Case operation
+            Case "createReport"
+                If StringValue(GetValue(data, "reportId")) <> "" Then FieldValues("reportId") = StringValue(GetValue(data, "reportId"))
+            Case "report"
+                If StringValue(GetValue(data, "reportDocumentId")) <> "" Then FieldValues("reportDocumentId") = StringValue(GetValue(data, "reportDocumentId"))
+            Case "submitFeed"
+                If StringValue(GetValue(data, "feedId")) <> "" Then FieldValues("feedId") = StringValue(GetValue(data, "feedId"))
+            Case "feed"
+                If StringValue(GetValue(data, "resultFeedDocumentId")) <> "" Then FieldValues("feedDocumentId") = StringValue(GetValue(data, "resultFeedDocumentId"))
+            Case "createInboundPlan"
+                If StringValue(GetValue(data, "inboundPlanId")) <> "" Then FieldValues("inboundPlanId") = StringValue(GetValue(data, "inboundPlanId"))
+                If StringValue(GetValue(data, "operationId")) <> "" Then FieldValues("operationId") = StringValue(GetValue(data, "operationId"))
+            Case "inboundPlans"
+                Dim plans = ListValue(GetValue(data, "inboundPlans"))
+                If plans.Count > 0 Then
+                    Dim id = StringValue(GetValue(Dict(plans(0)), "inboundPlanId"))
+                    If id <> "" Then FieldValues("inboundPlanId") = id
+                End If
+            Case "inboundPlan"
+                Dim shipments = ListValue(GetValue(data, "shipments"))
+                If shipments.Count > 0 Then
+                    Dim id = StringValue(GetValue(Dict(shipments(0)), "shipmentId"))
+                    If id <> "" Then FieldValues("shipmentId") = id
+                End If
+            Case "orders"
+                Dim orders = ListValue(GetValue(data, "orders"))
+                If orders.Count > 0 Then
+                    Dim id = StringValue(GetValue(Dict(orders(0)), "orderId"))
+                    If id <> "" Then FieldValues("orderId") = id
+                End If
+        End Select
+    End Sub
+
+    Private Function FindDocumentUrl(dataObj As Object) As String
+        Dim data = Dict(dataObj)
+        Dim direct = StringValue(GetValue(data, "url"))
+        If direct <> "" Then Return direct
+        Dim downloads = ListValue(GetValue(data, "documentDownloads"))
+        If downloads.Count > 0 Then
+            Dim uri = StringValue(GetValue(Dict(downloads(0)), "uri"))
+            If uri <> "" Then Return uri
+        End If
+        Dim payload = Dict(GetValue(data, "payload"))
+        For Each key In {"DownloadURL", "downloadURL", "downloadUrl"}
+            Dim u = StringValue(GetValue(payload, key))
+            If u <> "" Then Return u
+        Next
+        Return ""
+    End Function
+
+    Private Sub OpenDocument(sender As Object, e As EventArgs)
+        If LastDocumentUrl = "" Then Return
+        Try
+            Process.Start(LastDocumentUrl)
+        Catch ex As Exception
+            MessageBox.Show("Could not open the document URL: " & ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
+    End Sub
+End Class
