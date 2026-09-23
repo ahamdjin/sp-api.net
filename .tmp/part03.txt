@@ -1,0 +1,200 @@
+        lblOperation.Text = Operations.First(Function(x) x.Id = id).Label
+        BuildOperationFields()
+        txtResult.Clear()
+        txtRaw.Clear()
+        lblMeta.Text = ""
+        btnOpenDocument.Visible = False
+    End Sub
+
+    Private Sub BuildOperationFields()
+        If requestPanel Is Nothing Then Return
+        SaveVisibleFieldValues()
+        requestPanel.SuspendLayout()
+        requestPanel.Controls.Clear()
+        FieldControls.Clear()
+        lblSandbox.Visible = IsSandbox()
+        lblSandbox.Text = If(IsSandbox(), SandboxGuide(CurrentOperation), "")
+
+        Select Case CurrentOperation
+            Case "catalog"
+                AddChoice("catalogMode", "Search mode", {"identifier", "keywords"}, True, AddressOf RebuildOnChange)
+                If S("catalogMode") = "identifier" Then AddChoice("identifierType", "Identifier type", {"ASIN", "UPC", "EAN", "GTIN", "ISBN", "SKU", "JAN", "MINSAN"}, True, AddressOf RebuildOnChange)
+                AddText("query", If(S("catalogMode") = "keywords", "Search terms", "Product identifier(s)"), True, True)
+                If S("catalogMode") = "identifier" AndAlso S("identifierType") = "SKU" Then AddText("sellerId", "Seller ID", True)
+                AddText("includedData", "Included data", True, True)
+                If S("catalogMode") = "identifier" AndAlso S("identifierType") = "ASIN" Then AddCheck("includeVariations", "Fetch every related variation and package ASIN")
+                If S("catalogMode") = "keywords" Then
+                    AddText("brandNames", "Brand names")
+                    AddText("classificationIds", "Classification IDs")
+                    AddText("catalogPageSize", "Results per page")
+                    AddText("pageToken", "Next-page token")
+                End If
+            Case "fees"
+                AddChoice("feeIdType", "Lookup by", {"ASIN", "SKU"}, True)
+                AddText("feeIdentifier", S("feeIdType"), True)
+                AddText("price", "Listing price (" & SelectedMarketplace().Currency & ")", True)
+                AddText("shipping", "Shipping (" & SelectedMarketplace().Currency & ")")
+                AddChoice("fulfillment", "Fulfilment", {"FBA", "Merchant"}, True)
+                AddText("requestIdentifier", "Request identifier")
+                AddText("pointsNumber", "Points number")
+                AddText("pointsAmount", "Points monetary value")
+            Case "inventory"
+                AddText("sellerSkus", "Seller SKUs", False, True)
+                AddText("startDateTime", "Changed since (ISO 8601 + timezone)")
+                AddText("inventoryNextToken", "Next-page token")
+                AddCheck("details", "Include quantity details")
+            Case "orders"
+                AddText("createdAfter", "Created after (ISO 8601 + timezone)", True)
+                AddText("createdBefore", "Created before (ISO 8601 + timezone)")
+                AddText("statuses", "Order statuses")
+                AddText("fulfilledBy", "Fulfilled by")
+                AddText("pageSize", "Results per page")
+                AddText("orderPaginationToken", "Next-page token")
+                AddText("orderIncludedData", "Included data override", False, True)
+                AddCheck("includeOrderPii", "Include buyer + recipient PII when no override is supplied")
+            Case "order"
+                AddText("orderId", "Amazon order ID", True)
+                AddText("orderIncludedData", "Included data override", False, True)
+                AddCheck("includeOrderPii", "Include buyer + recipient PII when no override is supplied")
+            Case "reports"
+                AddText("reportTypes", "Report type(s)", False, True)
+                AddText("processingStatuses", "Processing statuses")
+                AddText("reportMarketplaceIds", "Marketplace IDs")
+                AddText("createdSince", "Created since")
+                AddText("createdUntil", "Created until")
+                AddText("pageSize", "Results per page")
+                AddText("reportNextToken", "Next-page token")
+            Case "createReport"
+                AddText("reportType", "Report type", True)
+                AddText("reportMarketplaceIds", "Marketplace IDs")
+                AddText("dataStartTime", "Data start")
+                AddText("dataEndTime", "Data end")
+                AddCheck("confirmed", "I understand this starts a report job using exactly these values.")
+            Case "report"
+                AddText("reportId", "Report ID", True)
+            Case "reportDocument"
+                AddText("reportDocumentId", "Report document ID", True)
+            Case "feeds"
+                AddText("feedTypes", "Feed type(s)", False, True)
+                AddText("processingStatuses", "Processing statuses")
+                AddText("feedMarketplaceIds", "Marketplace IDs")
+                AddText("createdSince", "Created since")
+                AddText("createdUntil", "Created until")
+                AddText("pageSize", "Results per page")
+                AddText("feedNextToken", "Next-page token")
+            Case "feed"
+                AddText("feedId", "Feed ID", True)
+            Case "feedDocument"
+                AddText("feedDocumentId", "Result feed document ID", True)
+            Case "submitFeed"
+                AddText("feedType", "Feed type", True)
+                AddText("feedMarketplaceIds", "Marketplace IDs")
+                AddText("contentType", "Content type", True)
+                AddText("content", "Feed content", True, True, 130)
+                AddCheck("confirmed", "I understand this submits the feed using exactly these values.")
+            Case "inboundPlans"
+                AddChoice("status", "Plan status", {"", "ACTIVE", "SHIPPED", "VOIDED"})
+                AddChoice("sortBy", "Sort by", {"LAST_UPDATED_TIME", "CREATION_TIME"})
+                AddChoice("sortOrder", "Sort order", {"DESC", "ASC"})
+                AddText("pageSize", "Results per page")
+                AddText("inboundPaginationToken", "Next-page token")
+            Case "inboundPlan"
+                AddText("inboundPlanId", "Inbound plan ID", True)
+            Case "inboundShipment"
+                AddText("inboundPlanId", "Inbound plan ID", True)
+                AddText("shipmentId", "Shipment ID", True)
+            Case "inboundOperationStatus"
+                AddText("operationId", "Operation ID", True)
+            Case "prepDetails"
+                AddText("mskus", "Merchant SKUs (one per line)", True, True)
+            Case "createInboundPlan"
+                AddText("planName", "Plan name")
+                AddText("destinationMarketplaces", "Destination marketplace ID")
+                AddText("items", "Items: MSKU, quantity, prep owner, label owner[, expiration, lot code]", True, True, 90)
+                AddText("contactName", "Contact name", True)
+                AddText("companyName", "Company")
+                AddText("addressLine1", "Address line 1", True)
+                AddText("addressLine2", "Address line 2")
+                AddText("city", "City", True)
+                AddText("districtOrCounty", "District / county")
+                AddText("stateOrProvinceCode", "State / province")
+                AddText("postalCode", "Postal code", True)
+                AddText("countryCode", "Country code")
+                AddText("phoneNumber", "Phone number", True)
+                AddText("email", "Email")
+                AddCheck("confirmed", "I understand this creates an inbound plan using exactly these values.")
+            Case "itemLabels"
+                AddText("items", "Items: MSKU, quantity", True, True)
+                AddChoice("labelType", "Label format", {"STANDARD_FORMAT", "THERMAL_PRINTING"}, True, AddressOf RebuildOnChange)
+                If S("labelType") = "THERMAL_PRINTING" Then
+                    AddText("labelHeight", "Height (25-100)", True)
+                    AddText("labelWidth", "Width (25-100)", True)
+                Else
+                    AddChoice("pageType", "Page type", {"A4_21", "A4_24", "A4_24_64x33", "A4_24_66x35", "A4_24_70x36", "A4_24_70x37", "A4_24i", "A4_27", "A4_40_52x29", "A4_44_48x25", "Letter_30"})
+                End If
+            Case "shipmentLabels"
+                AddText("shipmentId", "Shipment ID", True)
+                AddChoice("shipmentLabelType", "Label type", {"UNIQUE", "BARCODE_2D", "PALLET"}, True, AddressOf RebuildOnChange)
+                AddText("shipmentPageType", "Page type", True)
+                AddText("numberOfPackages", "Number of packages")
+                AddText("numberOfPallets", "Number of pallets", S("shipmentLabelType") = "PALLET")
+                AddText("packageLabelsToPrint", "Package labels to print", False, True)
+                AddText("shipmentPageSize", "Page size")
+                AddText("pageStartIndex", "Page start index")
+            Case "billOfLading"
+                AddText("shipmentId", "Shipment ID", True)
+        End Select
+        requestPanel.ResumeLayout()
+    End Sub
+
+    Private Sub RebuildOnChange(sender As Object, e As EventArgs)
+        SaveVisibleFieldValues()
+        BuildOperationFields()
+    End Sub
+
+    Private Sub AddText(key As String, labelText As String, Optional required As Boolean = False, Optional multiline As Boolean = False, Optional height As Integer = 70)
+        Dim host As New Panel With {.Width = Math.Max(620, requestPanel.ClientSize.Width - 35), .Height = If(multiline, height + 26, 52), .Margin = New Padding(3, 2, 3, 5)}
+        Dim label As New Label With {.Text = labelText & If(required, " *", ""), .AutoSize = True, .Location = New Point(0, 3)}
+        Dim box As New TextBox With {.Name = key, .Tag = key, .Text = S(key), .Location = New Point(0, 23), .Width = Math.Max(580, host.Width - 8)}
+        If multiline Then
+            box.Multiline = True
+            box.ScrollBars = ScrollBars.Vertical
+            box.Height = height
+        End If
+        AddHandler box.TextChanged, Sub(sender, e) FieldValues(key) = box.Text
+        host.Controls.Add(label)
+        host.Controls.Add(box)
+        requestPanel.Controls.Add(host)
+        FieldControls(key) = box
+    End Sub
+
+    Private Sub AddChoice(key As String, labelText As String, options As IEnumerable(Of String), Optional required As Boolean = False, Optional extraHandler As EventHandler = Nothing)
+        Dim host As New Panel With {.Width = Math.Max(620, requestPanel.ClientSize.Width - 35), .Height = 52, .Margin = New Padding(3, 2, 3, 5)}
+        Dim label As New Label With {.Text = labelText & If(required, " *", ""), .AutoSize = True, .Location = New Point(0, 3)}
+        Dim combo As New ComboBox With {.Name = key, .Tag = key, .Location = New Point(0, 23), .Width = Math.Max(580, host.Width - 8), .DropDownStyle = ComboBoxStyle.DropDownList}
+        combo.Items.AddRange(options.Cast(Of Object)().ToArray())
+        Dim value = S(key)
+        If key = "fulfillment" Then value = If(B("isAmazonFulfilled"), "FBA", "Merchant")
+        If combo.Items.Contains(value) Then combo.SelectedItem = value ElseIf combo.Items.Count > 0 Then combo.SelectedIndex = 0
+        AddHandler combo.SelectedIndexChanged, Sub(sender, e)
+                                                   If key = "fulfillment" Then
+                                                       FieldValues("isAmazonFulfilled") = (CStr(combo.SelectedItem) = "FBA")
+                                                   Else
+                                                       FieldValues(key) = CStr(combo.SelectedItem)
+                                                   End If
+                                               End Sub
+        If extraHandler IsNot Nothing Then AddHandler combo.SelectedIndexChanged, extraHandler
+        host.Controls.Add(label)
+        host.Controls.Add(combo)
+        requestPanel.Controls.Add(host)
+        FieldControls(key) = combo
+    End Sub
+
+    Private Sub AddCheck(key As String, labelText As String)
+        Dim check As New CheckBox With {.Name = key, .Tag = key, .Text = labelText, .Checked = B(key), .AutoSize = True, .MaximumSize = New Size(Math.Max(620, requestPanel.ClientSize.Width - 35), 0), .Margin = New Padding(3, 7, 3, 7)}
+        AddHandler check.CheckedChanged, Sub(sender, e) FieldValues(key) = check.Checked
+        requestPanel.Controls.Add(check)
+        FieldControls(key) = check
+    End Sub
+
+    Private Sub SaveVisibleFieldValues()
