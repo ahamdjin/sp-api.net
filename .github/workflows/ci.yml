@@ -46,6 +46,22 @@ jobs:
             if (-not $source.Contains('.Id = "' + $operation + '"')) { throw "Missing operation in UI: $operation" }
             if (-not $router.Contains('Case "' + $operation + '"')) { throw "Missing operation in execution router: $operation" }
           }
+
+          $contractChecks = @(
+            'SplitValues(S("reportMarketplaceIds"), 25)',
+            'SplitValues(S("feedMarketplaceIds"), 25)',
+            'SplitValues(S("reportMarketplaceIds"), 10)',
+            'SplitValues(S("feedMarketplaceIds"), 10)',
+            '/orders/2026-01-01/orders',
+            '.Replace("%", "%25").Replace("+", "%2B").Replace(",", "%2C")',
+            'REMOVED_LISTING_FEED_TYPE',
+            'enableContentEncodingUrlHeader=true',
+            'UNIQUE", "BARCODE_2D", "PALLET"',
+            'A4_21", "A4_24"'
+          )
+          foreach ($value in $contractChecks) {
+            if (-not $source.Contains($value)) { throw "Missing SP-API contract guard: $value" }
+          }
       - name: Build Debug like Visual Studio F5
         run: msbuild SP-API.NET.sln /m /p:Configuration=Debug /p:Platform="Any CPU"
       - name: Build Release
