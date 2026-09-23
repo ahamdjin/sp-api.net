@@ -99,6 +99,15 @@ Public Class MainForm
         End Sub
     End Class
 
+    Private Class ReturnedRecordAction
+        Public Property Label As String = ""
+        Public Property OperationId As String = ""
+        Public Property Fields As New Dictionary(Of String, String)(StringComparer.OrdinalIgnoreCase)
+        Public Overrides Function ToString() As String
+            Return Label
+        End Function
+    End Class
+
     Private Class OperationInfo
         Public Property Id As String = ""
         Public Property Label As String = ""
@@ -201,12 +210,15 @@ Public Class MainForm
     Private ReadOnly btnOpenDocument As New Button()
     Private ReadOnly btnNextStep As New Button()
     Private ReadOnly cboDocuments As New ComboBox()
+    Private ReadOnly cboReturnedRecords As New ComboBox()
+    Private ReadOnly btnOpenReturnedRecord As New Button()
     Private ReadOnly tabs As New TabControl()
 
     Private CurrentOperation As String = "catalog"
     Private LastResult As ApiResult
     Private LastDocumentUrl As String = ""
     Private ReadOnly DocumentUrls As New List(Of KeyValuePair(Of String, String))()
+    Private ReadOnly ReturnedRecordActions As New List(Of ReturnedRecordAction)()
     Private NextOperationId As String = ""
     Private NextFieldKey As String = ""
     Private NextFieldValue As String = ""
@@ -333,6 +345,23 @@ Public Class MainForm
         }
         ConfigureNextStep("feed", failedFeed)
         If NextOperationId <> "feedDocument" OrElse NextFieldValue <> "result-doc" Then Throw New InvalidOperationException("Failed feed processing report must remain reachable.")
+
+        SelectOperation("orders")
+        Dim orderListResult As New ApiResult With {
+            .Ok = True,
+            .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"orders", New Object() {
+                    New Dictionary(Of String, Object) From {{"orderId", "ORDER-1"}},
+                    New Dictionary(Of String, Object) From {{"orderId", "ORDER-2"}}
+                }}
+            }
+        }
+        ConfigureReturnedRecords("orders", orderListResult)
+        If ReturnedRecordActions.Count <> 2 Then Throw New InvalidOperationException("Returned order selector did not expose every record.")
+        cboReturnedRecords.SelectedIndex = 1
+        OpenReturnedRecord(Nothing, EventArgs.Empty)
+        If CurrentOperation <> "order" OrElse S("orderId") <> "ORDER-2" Then Throw New InvalidOperationException("Returned order selector did not carry the selected ID forward.")
 
         Dim tooManyValuesRejected As Boolean = False
         Try
@@ -573,6 +602,18 @@ Public Class MainForm
         AddHandler btnCopyResult.Click, Sub(sender, e) CopyTextToClipboard(txtResult.Text, "Result")
         resultActions.Controls.Add(btnCopyResult)
 
+        cboReturnedRecords.DropDownStyle = ComboBoxStyle.DropDownList
+        cboReturnedRecords.Width = 285
+        cboReturnedRecords.Visible = False
+        resultActions.Controls.Add(cboReturnedRecords)
+
+        btnOpenReturnedRecord.Text = "Open selected"
+        btnOpenReturnedRecord.AutoSize = True
+        btnOpenReturnedRecord.Padding = New Padding(8, 2, 8, 2)
+        btnOpenReturnedRecord.Visible = False
+        AddHandler btnOpenReturnedRecord.Click, AddressOf OpenReturnedRecord
+        resultActions.Controls.Add(btnOpenReturnedRecord)
+
         btnNextStep.Text = "Next step"
         btnNextStep.AutoSize = True
         btnNextStep.Padding = New Padding(8, 2, 8, 2)
@@ -673,6 +714,10 @@ Public Class MainForm
         cboDocuments.Visible = False
         cboDocuments.Items.Clear()
         DocumentUrls.Clear()
+        cboReturnedRecords.Visible = False
+        cboReturnedRecords.Items.Clear()
+        btnOpenReturnedRecord.Visible = False
+        ReturnedRecordActions.Clear()
         btnNextStep.Visible = False
         NextOperationId = ""
         NextFieldKey = ""
@@ -2550,6 +2595,7 @@ Public Class MainForm
         btnOpenDocument.Text = If(DocumentUrls.Count > 1, "Open selected document", "Open / download document")
         btnOpenDocument.Visible = DocumentUrls.Count > 0
 
+        ConfigureReturnedRecords(operation, result)
         ConfigureNextStep(operation, result)
         tabs.SelectedIndex = 0
     End Sub
@@ -2738,6 +2784,93 @@ Public Class MainForm
         Return uri.AbsoluteUri
     End Function
 
+    Private Sub ConfigureReturnedRecords(operation As String, result As ApiResult)
+        ReturnedRecordActions.Clear()
+        cboReturnedRecords.Items.Clear()
+        cboReturnedRecords.Visible = False
+        btnOpenReturnedRecord.Visible = False
+        If Not result.Ok Then Return
+
+        Dim data = AsDict(result.Data)
+        Select Case operation
+            Case "orders"
+                For Each raw In ListValue(GetValue(data, "orders"))
+                    Dim record = AsDict(raw)
+                    Dim id = StringValue(GetValue(record, "orderId"))
+                    If id = "" Then id = StringValue(GetValue(record, "amazonOrderId"))
+                    If id = "" Then Continue For
+                    Dim fulfillment = AsDict(GetValue(record, "fulfillment"))
+                    Dim status = StringValue(GetValue(fulfillment, "fulfillmentStatus"))
+                    If status = "" Then status = StringValue(GetValue(record, "orderStatus"))
+                    AddReturnedRecord("order", RecordLabel(id, "", status), New Dictionary(Of String, String) From {{"orderId", id}})
+                Next
+
+            Case "reports"
+                For Each raw In ListValue(GetValue(data, "reports"))
+                    Dim record = AsDict(raw)
+                    Dim id = StringValue(GetValue(record, "reportId"))
+                    If id = "" Then Continue For
+                    AddReturnedRecord("report", RecordLabel(id, StringValue(GetValue(record, "reportType")), StringValue(GetValue(record, "processingStatus"))), New Dictionary(Of String, String) From {{"reportId", id}})
+                Next
+
+            Case "feeds"
+                For Each raw In ListValue(GetValue(data, "feeds"))
+                    Dim record = AsDict(raw)
+                    Dim id = StringValue(GetValue(record, "feedId"))
+                    If id = "" Then Continue For
+                    AddReturnedRecord("feed", RecordLabel(id, StringValue(GetValue(record, "feedType")), StringValue(GetValue(record, "processingStatus"))), New Dictionary(Of String, String) From {{"feedId", id}})
+                Next
+
+            Case "inboundPlans"
+                For Each raw In ListValue(GetValue(data, "inboundPlans"))
+                    Dim record = AsDict(raw)
+                    Dim id = StringValue(GetValue(record, "inboundPlanId"))
+                    If id = "" Then Continue For
+                    AddReturnedRecord("inboundPlan", RecordLabel(id, StringValue(GetValue(record, "name")), StringValue(GetValue(record, "status"))), New Dictionary(Of String, String) From {{"inboundPlanId", id}})
+                Next
+
+            Case "inboundPlan"
+                Dim inboundPlanId = StringValue(GetValue(data, "inboundPlanId"))
+                If inboundPlanId = "" Then inboundPlanId = S("inboundPlanId")
+                For Each raw In ListValue(GetValue(data, "shipments"))
+                    Dim record = AsDict(raw)
+                    Dim shipmentId = StringValue(GetValue(record, "shipmentId"))
+                    If shipmentId = "" OrElse inboundPlanId = "" Then Continue For
+                    AddReturnedRecord("inboundShipment", RecordLabel(shipmentId, StringValue(GetValue(record, "name")), StringValue(GetValue(record, "status"))), New Dictionary(Of String, String) From {{"inboundPlanId", inboundPlanId}, {"shipmentId", shipmentId}})
+                Next
+        End Select
+
+        For Each action In ReturnedRecordActions
+            cboReturnedRecords.Items.Add(action)
+        Next
+        If cboReturnedRecords.Items.Count > 0 Then cboReturnedRecords.SelectedIndex = 0
+        cboReturnedRecords.Visible = ReturnedRecordActions.Count > 0
+        btnOpenReturnedRecord.Visible = ReturnedRecordActions.Count > 0
+    End Sub
+
+    Private Sub AddReturnedRecord(operationId As String, label As String, fields As Dictionary(Of String, String))
+        ReturnedRecordActions.Add(New ReturnedRecordAction With {.OperationId = operationId, .Label = label, .Fields = fields})
+    End Sub
+
+    Private Function RecordLabel(id As String, secondary As String, status As String) As String
+        Dim parts As New List(Of String)()
+        If secondary <> "" Then parts.Add(secondary)
+        If status <> "" Then parts.Add(status)
+        parts.Add(id)
+        Return String.Join(" · ", parts)
+    End Function
+
+    Private Sub OpenReturnedRecord(sender As Object, e As EventArgs)
+        Dim index = cboReturnedRecords.SelectedIndex
+        If index < 0 OrElse index >= ReturnedRecordActions.Count Then Return
+
+        Dim action = ReturnedRecordActions(index)
+        For Each pair In action.Fields
+            FieldValues(pair.Key) = pair.Value
+        Next
+        NavigateToOperation(action.OperationId)
+    End Sub
+
     Private Sub ConfigureNextStep(operation As String, result As ApiResult)
         btnNextStep.Visible = False
         NextOperationId = ""
@@ -2849,6 +2982,10 @@ Public Class MainForm
             cboDocuments.Visible = False
             cboDocuments.Items.Clear()
             DocumentUrls.Clear()
+            cboReturnedRecords.Visible = False
+            cboReturnedRecords.Items.Clear()
+            btnOpenReturnedRecord.Visible = False
+            ReturnedRecordActions.Clear()
             btnNextStep.Visible = False
             NextOperationId = ""
             NextFieldKey = ""
