@@ -455,16 +455,37 @@ Public Class MainForm
         tabs.TabPages.Add(rawTab)
         rightSplit.Panel2.Controls.Add(tabs)
 
-        lblMeta.Dock = DockStyle.Top
+        Dim resultLayout As New TableLayoutPanel With {
+            .Dock = DockStyle.Fill,
+            .ColumnCount = 1,
+            .RowCount = 3,
+            .Padding = New Padding(0)
+        }
+        resultLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        resultLayout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        resultLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+        resultLayout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        resultTab.Controls.Add(resultLayout)
+
+        lblMeta.Dock = DockStyle.Fill
         lblMeta.Height = 28
         lblMeta.Padding = New Padding(6)
-        resultTab.Controls.Add(lblMeta)
+        resultLayout.Controls.Add(lblMeta, 0, 0)
+
+        txtResult.Dock = DockStyle.Fill
+        txtResult.Multiline = True
+        txtResult.ScrollBars = ScrollBars.Both
+        txtResult.ReadOnly = True
+        txtResult.WordWrap = False
+        txtResult.Font = New Font("Consolas", 9.0F)
+        resultLayout.Controls.Add(txtResult, 0, 1)
 
         Dim resultActions As New FlowLayoutPanel With {
-            .Dock = DockStyle.Bottom,
-            .Height = 40,
+            .Dock = DockStyle.Fill,
+            .AutoSize = True,
+            .AutoSizeMode = AutoSizeMode.GrowAndShrink,
             .FlowDirection = FlowDirection.LeftToRight,
-            .WrapContents = False,
+            .WrapContents = True,
             .Padding = New Padding(3, 3, 3, 3)
         }
 
@@ -494,24 +515,18 @@ Public Class MainForm
         btnOpenDocument.Visible = False
         AddHandler btnOpenDocument.Click, AddressOf OpenDocument
         resultActions.Controls.Add(btnOpenDocument)
-        resultTab.Controls.Add(resultActions)
+        resultLayout.Controls.Add(resultActions, 0, 2)
 
-        txtResult.Dock = DockStyle.Fill
-        txtResult.Multiline = True
-        txtResult.ScrollBars = ScrollBars.Both
-        txtResult.ReadOnly = True
-        txtResult.WordWrap = False
-        txtResult.Font = New Font("Consolas", 9.0F)
-        resultTab.Controls.Add(txtResult)
-        txtResult.BringToFront()
-
-        Dim btnCopyRaw As New Button With {
-            .Text = "Copy raw response",
-            .Dock = DockStyle.Bottom,
-            .Height = 34
+        Dim rawLayout As New TableLayoutPanel With {
+            .Dock = DockStyle.Fill,
+            .ColumnCount = 1,
+            .RowCount = 2,
+            .Padding = New Padding(0)
         }
-        AddHandler btnCopyRaw.Click, Sub(sender, e) CopyTextToClipboard(txtRaw.Text, "Raw response")
-        rawTab.Controls.Add(btnCopyRaw)
+        rawLayout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        rawLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+        rawLayout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        rawTab.Controls.Add(rawLayout)
 
         txtRaw.Dock = DockStyle.Fill
         txtRaw.Multiline = True
@@ -519,7 +534,16 @@ Public Class MainForm
         txtRaw.ReadOnly = True
         txtRaw.WordWrap = False
         txtRaw.Font = New Font("Consolas", 9.0F)
-        rawTab.Controls.Add(txtRaw)
+        rawLayout.Controls.Add(txtRaw, 0, 0)
+
+        Dim btnCopyRaw As New Button With {
+            .Text = "Copy raw response",
+            .AutoSize = True,
+            .Padding = New Padding(8, 2, 8, 2),
+            .Anchor = AnchorStyles.Left
+        }
+        AddHandler btnCopyRaw.Click, Sub(sender, e) CopyTextToClipboard(txtRaw.Text, "Raw response")
+        rawLayout.Controls.Add(btnCopyRaw, 0, 1)
     End Sub
 
     Private Sub AddCredential(grid As TableLayoutPanel, col As Integer, row As Integer, labelText As String, control As Control, secret As Boolean)
