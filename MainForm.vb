@@ -194,11 +194,13 @@ Public Class MainForm
     Private ReadOnly txtResult As New TextBox()
     Private ReadOnly txtRaw As New TextBox()
     Private ReadOnly btnOpenDocument As New Button()
+    Private ReadOnly btnNextStep As New Button()
     Private ReadOnly tabs As New TabControl()
 
     Private CurrentOperation As String = "catalog"
     Private LastResult As ApiResult
     Private LastDocumentUrl As String = ""
+    Private NextOperationId As String = ""
     Private ConnectionVerified As Boolean
 
     Private Const CoreOrderData As String = "PROCEEDS,EXPENSE,PROMOTION,CANCELLATION,FULFILLMENT,PACKAGES,TAX,PAYMENT,FULFILLMENT_ORDERS"
@@ -372,12 +374,28 @@ Public Class MainForm
         lblMeta.Padding = New Padding(6)
         resultTab.Controls.Add(lblMeta)
 
+        Dim resultActions As New FlowLayoutPanel With {
+            .Dock = DockStyle.Bottom,
+            .Height = 40,
+            .FlowDirection = FlowDirection.LeftToRight,
+            .WrapContents = False,
+            .Padding = New Padding(3, 3, 3, 3)
+        }
+
+        btnNextStep.Text = "Next step"
+        btnNextStep.AutoSize = True
+        btnNextStep.Padding = New Padding(8, 2, 8, 2)
+        btnNextStep.Visible = False
+        AddHandler btnNextStep.Click, AddressOf OpenNextStep
+        resultActions.Controls.Add(btnNextStep)
+
         btnOpenDocument.Text = "Open / download document"
-        btnOpenDocument.Dock = DockStyle.Bottom
-        btnOpenDocument.Height = 34
+        btnOpenDocument.AutoSize = True
+        btnOpenDocument.Padding = New Padding(8, 2, 8, 2)
         btnOpenDocument.Visible = False
         AddHandler btnOpenDocument.Click, AddressOf OpenDocument
-        resultTab.Controls.Add(btnOpenDocument)
+        resultActions.Controls.Add(btnOpenDocument)
+        resultTab.Controls.Add(resultActions)
 
         txtResult.Dock = DockStyle.Fill
         txtResult.Multiline = True
@@ -437,6 +455,8 @@ Public Class MainForm
         txtRaw.Text = If(operation.Kind = "legacy", "", "The complete Amazon response will appear here.")
         lblMeta.Text = ""
         btnOpenDocument.Visible = False
+        btnNextStep.Visible = False
+        NextOperationId = ""
         btnRun.Enabled = operation.Kind <> "legacy"
     End Sub
 
@@ -2107,6 +2127,7 @@ Public Class MainForm
         txtResult.Text = BuildSummary(operation, result)
         LastDocumentUrl = FindDocumentUrl(result.Data)
         btnOpenDocument.Visible = LastDocumentUrl <> ""
+        ConfigureNextStep(operation, result)
         tabs.SelectedIndex = 0
     End Sub
 
@@ -2264,6 +2285,61 @@ Public Class MainForm
         If uri.Scheme <> Uri.UriSchemeHttps Then Return ""
         Return uri.AbsoluteUri
     End Function
+
+    Private Sub ConfigureNextStep(operation As String, result As ApiResult)
+        btnNextStep.Visible = False
+        NextOperationId = ""
+        If Not result.Ok Then Return
+
+        Dim data = AsDict(result.Data)
+        Select Case operation
+            Case "createReport"
+                If StringValue(GetValue(data, "reportId")) <> "" Then
+                    NextOperationId = "report"
+                    btnNextStep.Text = "Next: Check report status"
+                End If
+            Case "report"
+                If StringValue(GetValue(data, "reportDocumentId")) <> "" Then
+                    NextOperationId = "reportDocument"
+                    btnNextStep.Text = "Next: Open report document"
+                End If
+            Case "submitFeed"
+                If StringValue(GetValue(data, "feedId")) <> "" Then
+                    NextOperationId = "feed"
+                    btnNextStep.Text = "Next: Check feed status"
+                End If
+            Case "feed"
+                If StringValue(GetValue(data, "resultFeedDocumentId")) <> "" Then
+                    NextOperationId = "feedDocument"
+                    btnNextStep.Text = "Next: Open processing report"
+                End If
+            Case "createInboundPlan"
+                If StringValue(GetValue(data, "operationId")) <> "" Then
+                    NextOperationId = "inboundOperationStatus"
+                    btnNextStep.Text = "Next: Check operation status"
+                End If
+        End Select
+
+        btnNextStep.Visible = NextOperationId <> ""
+    End Sub
+
+    Private Sub OpenNextStep(sender As Object, e As EventArgs)
+        If NextOperationId = "" Then Return
+        NavigateToOperation(NextOperationId)
+    End Sub
+
+    Private Sub NavigateToOperation(operationId As String)
+        For Each groupNode As TreeNode In operationTree.Nodes
+            For Each node As TreeNode In groupNode.Nodes
+                If node.Tag IsNot Nothing AndAlso String.Equals(CStr(node.Tag), operationId, StringComparison.Ordinal) Then
+                    operationTree.SelectedNode = node
+                    node.EnsureVisible()
+                    Return
+                End If
+            Next
+        Next
+        SelectOperation(operationId)
+    End Sub
 
     Private Sub OpenDocument(sender As Object, e As EventArgs)
         If LastDocumentUrl = "" Then Return
