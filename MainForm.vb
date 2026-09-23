@@ -280,8 +280,7 @@ Public Class MainForm
         AddCredential(cGrid, 0, 1, "Environment", cboEnvironment, False)
 
         cboMarketplace.DropDownStyle = ComboBoxStyle.DropDownList
-        cboMarketplace.DataSource = Marketplaces
-        cboMarketplace.DisplayMember = "Name"
+        cboMarketplace.Items.AddRange(Marketplaces.Cast(Of Object)().ToArray())
         cboMarketplace.SelectedIndex = 0
         AddCredential(cGrid, 2, 1, "Marketplace", cboMarketplace, False)
 
