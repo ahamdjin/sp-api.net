@@ -1650,7 +1650,7 @@ Public Class MainForm
                 .TraceId = Header(response, "x-amzn-trace-id"), .RateLimit = Header(response, "x-amzn-ratelimit-limit"),
                 .Data = data, .DurationMs = sw.ElapsedMilliseconds, .Attempts = outcome.Item2
             }
-            If Not result.Ok Then result.Problem = BuildProblem(result.Status, result.StatusText, data, method)
+            If Not result.Ok Then result.Problem = BuildProblem(result.Status, result.StatusText, data, method, Header(response, "x-amzn-errortype"))
             Return result
         End Using
     End Function
@@ -1689,6 +1689,11 @@ Public Class MainForm
             Dim raw = retryAfter.FirstOrDefault()
             Dim seconds As Double
             If Double.TryParse(raw, NumberStyles.Any, CultureInfo.InvariantCulture, seconds) Then Return ClampDelay(CInt(seconds * 1000))
+
+            Dim retryAt As DateTimeOffset
+            If DateTimeOffset.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces Or DateTimeStyles.AssumeUniversal, retryAt) Then
+                Return ClampDelay(CInt((retryAt.ToUniversalTime() - DateTimeOffset.UtcNow).TotalMilliseconds))
+            End If
         End If
         If CInt(response.StatusCode) = 429 Then
             Dim rateRaw As IEnumerable(Of String) = Nothing
@@ -1704,8 +1709,10 @@ Public Class MainForm
         Return Math.Min(Math.Max(value, 500), 15000)
     End Function
 
-    Private Function BuildProblem(status As Integer, statusText As String, data As Object, method As HttpMethod) As ApiProblem
-        Dim code = ExtractCode(data, "HTTP_" & status.ToString(CultureInfo.InvariantCulture))
+    Private Function BuildProblem(status As Integer, statusText As String, data As Object, method As HttpMethod, Optional headerCode As String = "") As ApiProblem
+        Dim code = ExtractCode(data, "")
+        If code = "" AndAlso headerCode <> "" Then code = headerCode.Split(":"c)(0)
+        If code = "" Then code = "HTTP_" & status.ToString(CultureInfo.InvariantCulture)
         Dim message = ExtractMessage(data, If(statusText = "", "Amazon returned HTTP " & status.ToString(), statusText))
         Dim retryable = status = 429 OrElse (method = HttpMethod.Get AndAlso {500, 502, 503, 504}.Contains(status))
         Return New ApiProblem With {.Code = code, .Message = message, .Details = ExtractDetails(data), .Action = RecommendedAction(code, status, message, retryable, method), .Retryable = retryable}
@@ -2056,9 +2063,34 @@ Public Class MainForm
     End Sub
 
     Private Function LocalFailure(ex As AppException) As ApiResult
+        Dim action = "Correct the request values and run the operation again."
+        Dim retryable = False
+        Dim key = (ex.Code & " " & ex.Message).ToLowerInvariant()
+
+        If key.Contains("ambiguous_write_result") Then
+            action = "Do not submit the write again yet. First check the related Amazon job/resource to see whether the original request was applied."
+        ElseIf key.Contains("amazon_timeout") Then
+            action = "Retry the read/connection test. If it repeats, check the Windows network/proxy path to Amazon."
+            retryable = True
+        ElseIf key.Contains("amazon_network_error") OrElse key.Contains("connection") OrElse key.Contains("ssl") OrElse key.Contains("certificate") Then
+            action = "Check Windows internet access, system proxy, and trusted certificate chain. The app uses Windows certificate trust and does not disable TLS validation."
+            retryable = True
+        ElseIf key.Contains("invalid_grant") OrElse key.Contains("refresh token") Then
+            action = "Reauthorize the seller account and use the new refresh token."
+        ElseIf key.Contains("invalid_client") OrElse key.Contains("client authentication") Then
+            action = "Verify the LWA Client ID and Client Secret belong to the same SP-API application."
+        ElseIf ex.Status = 401 OrElse ex.Status = 403 Then
+            action = "Verify seller authorization and the Amazon role/permission required by this operation."
+        ElseIf key.Contains("document") AndAlso key.Contains("url") Then
+            action = "Do not open the returned URL. Keep the Amazon request ID and retry the document metadata request."
+        ElseIf key.Contains("no_response") Then
+            action = "Retry after checking Windows network/proxy connectivity to Amazon."
+            retryable = True
+        End If
+
         Return New ApiResult With {
-            .Ok = False, .Status = ex.Status, .StatusText = "Local validation error", .ErrorMessage = ex.Message,
-            .Problem = New ApiProblem With {.Code = ex.Code, .Message = ex.Message, .Details = ex.Details, .Action = "Correct the request values and run the operation again.", .Retryable = False}
+            .Ok = False, .Status = ex.Status, .StatusText = If(ex.Status >= 500, "Local / network error", "Local validation error"), .ErrorMessage = ex.Message,
+            .Problem = New ApiProblem With {.Code = ex.Code, .Message = ex.Message, .Details = ex.Details, .Action = action, .Retryable = retryable}
         }
     End Function
 
