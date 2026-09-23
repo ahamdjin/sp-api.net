@@ -168,7 +168,9 @@ Public Class MainForm
         New OperationInfo With {.Group = "FBA inbound", .Id = "createInboundPlan", .Label = "Create plan", .Kind = "write"},
         New OperationInfo With {.Group = "FBA inbound", .Id = "itemLabels", .Label = "Item labels"},
         New OperationInfo With {.Group = "FBA inbound", .Id = "shipmentLabels", .Label = "Shipment labels"},
-        New OperationInfo With {.Group = "FBA inbound", .Id = "billOfLading", .Label = "Bill of lading"}
+        New OperationInfo With {.Group = "FBA inbound", .Id = "billOfLading", .Label = "Bill of lading"},
+        New OperationInfo With {.Group = "Legacy database", .Id = "legacyConvert", .Label = "Convert Amazon_US", .Kind = "legacy"},
+        New OperationInfo With {.Group = "Legacy database", .Id = "legacyFc", .Label = "SKU / FC bulk update", .Kind = "legacy"}
     }
 
     Private ReadOnly FieldValues As New Dictionary(Of String, Object)(StringComparer.OrdinalIgnoreCase)
@@ -417,6 +419,7 @@ Public Class MainForm
         txtRaw.Clear()
         lblMeta.Text = ""
         btnOpenDocument.Visible = False
+        btnRun.Enabled = Operations.First(Function(x) x.Id = id).Kind <> "legacy"
     End Sub
 
     Private Sub BuildOperationFields()
@@ -425,8 +428,9 @@ Public Class MainForm
         requestPanel.SuspendLayout()
         requestPanel.Controls.Clear()
         FieldControls.Clear()
-        lblSandbox.Visible = IsSandbox()
-        lblSandbox.Text = If(IsSandbox(), SandboxGuide(CurrentOperation), "")
+        Dim guide = If(IsSandbox(), SandboxGuide(CurrentOperation), "")
+        lblSandbox.Visible = guide <> ""
+        lblSandbox.Text = guide
 
         Select Case CurrentOperation
             Case "catalog"
@@ -556,6 +560,8 @@ Public Class MainForm
                 AddText("pageStartIndex", "Page start index")
             Case "billOfLading"
                 AddText("shipmentId", "Shipment ID", True)
+            Case "legacyConvert", "legacyFc"
+                AddNote("This is not an SP-API request. It depends on the old private SQL database/tables and business rules, so it remains intentionally disconnected just like the current workbench.")
         End Select
         requestPanel.ResumeLayout()
     End Sub
@@ -605,6 +611,19 @@ Public Class MainForm
         host.Controls.Add(combo)
         requestPanel.Controls.Add(host)
         FieldControls(key) = combo
+    End Sub
+
+    Private Sub AddNote(message As String)
+        Dim note As New Label With {
+            .Text = message,
+            .AutoSize = True,
+            .MaximumSize = New Size(Math.Max(620, requestPanel.ClientSize.Width - 35), 0),
+            .Padding = New Padding(8),
+            .BackColor = Color.FromArgb(245, 245, 245),
+            .ForeColor = Color.DimGray,
+            .Margin = New Padding(3, 8, 3, 8)
+        }
+        requestPanel.Controls.Add(note)
     End Sub
 
     Private Sub AddCheck(key As String, labelText As String)
@@ -714,6 +733,10 @@ Public Class MainForm
 
     Private Async Function RunCurrentAsync() As Task
         SaveVisibleFieldValues()
+        If CurrentOperation = "legacyConvert" OrElse CurrentOperation = "legacyFc" Then
+            MessageBox.Show("This legacy SQL utility is intentionally not connected in the portable SP-API workbench.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
         If Not CredentialsReady() Then
             MessageBox.Show("Client ID, client secret, and refresh token are required.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning)
             Return
@@ -741,7 +764,7 @@ Public Class MainForm
     End Function
 
     Private Sub ToggleBusy(busy As Boolean, message As String)
-        btnRun.Enabled = Not busy
+        btnRun.Enabled = Not busy AndAlso Operations.First(Function(x) x.Id = CurrentOperation).Kind <> "legacy"
         btnTest.Enabled = Not busy
         operationTree.Enabled = Not busy
         Cursor = If(busy, Cursors.WaitCursor, Cursors.Default)
@@ -817,8 +840,8 @@ Public Class MainForm
         If mode = "keywords" Then
             params.Add(QPair("keywords", query))
             If Not IsSandbox() Then params.Add(QPair("keywordsLocale", marketplace.Locale))
-            AddCsvParam(params, "brandNames", S("brandNames"), 20)
-            AddCsvParam(params, "classificationIds", S("classificationIds"), 20)
+            AddCsvParam(params, "brandNames", S("brandNames"), Integer.MaxValue)
+            AddCsvParam(params, "classificationIds", S("classificationIds"), Integer.MaxValue)
             AddOptional(params, "pageToken", S("pageToken"))
         Else
             params.Add(QPair("identifiers", String.Join(",", identifiers)))
