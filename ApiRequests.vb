@@ -24,6 +24,8 @@ Imports System.Web.Script.Serialization
 ' Amazon/LWA requests, request validation, retries, documents, and API error handling.
 Public Partial Class MainForm
 
+    ' -------------------- Shared API types and HTTP client --------------------
+
     Private Class ApiProblem
         Public Property Code As String = ""
         Public Property Message As String = ""
@@ -86,6 +88,17 @@ Public Partial Class MainForm
     Private Const DefaultCatalogData As String = "attributes,classifications,dimensions,identifiers,images,productTypes,relationships,salesRanks,summaries,vendorDetails"
     Private Const PreviewLimit As Integer = 2 * 1024 * 1024
 
+    Private Function Endpoint() As String
+        Dim prefix = If(IsSandbox(), "https://sandbox.sellingpartnerapi-", "https://sellingpartnerapi-")
+        Return prefix & SelectedMarketplace().Region & ".amazon.com"
+    End Function
+
+    Private Async Function TestConnectionRequestAsync() As Task(Of ApiResult)
+        Dim token = Await GetAccessTokenAsync(True)
+        Return Await CallSpApiAsync("/sellers/v1/marketplaceParticipations", HttpMethod.Get, Nothing, token.Item1)
+    End Function
+
+    ' -------------------- Operation router --------------------
     Private Async Function ExecuteOperationAsync(operation As String) As Task(Of ApiResult)
         Select Case operation
             Case "catalog" : Return Await CatalogAsync()
@@ -114,6 +127,7 @@ Public Partial Class MainForm
         End Select
     End Function
 
+    ' -------------------- Catalog --------------------
     Private Async Function CatalogAsync() As Task(Of ApiResult)
         Dim marketplace = SelectedMarketplace()
         Dim mode = Required("catalogMode")
@@ -269,6 +283,7 @@ Public Partial Class MainForm
         Return String.Join(",", entries)
     End Function
 
+    ' -------------------- Fees, inventory, and orders --------------------
     Private Async Function FeesAsync() As Task(Of ApiResult)
         Dim idType = Required("feeIdType")
         Dim identifier = Required("feeIdentifier")
@@ -365,6 +380,7 @@ Public Partial Class MainForm
         Return If(B("includeOrderPii"), "BUYER,RECIPIENT," & CoreOrderData, CoreOrderData)
     End Function
 
+    ' -------------------- Reports and feeds --------------------
     Private Async Function ReportsAsync() As Task(Of ApiResult)
         Dim nextToken = S("reportNextToken")
         Dim q As New List(Of KeyValuePair(Of String, String))()
@@ -461,6 +477,7 @@ Public Partial Class MainForm
         Return created
     End Function
 
+    ' -------------------- Fulfillment Inbound --------------------
     Private Async Function InboundPlansAsync() As Task(Of ApiResult)
         Dim q As New List(Of KeyValuePair(Of String, String))()
         If S("pageSize") <> "" Then q.Add(QPair("pageSize", IntField("pageSize", 1, 30).ToString(CultureInfo.InvariantCulture)))
@@ -547,6 +564,7 @@ Public Partial Class MainForm
         Return Await CallSpApiAsync("/fba/inbound/v0/shipments/" & Encode(Required("shipmentId")) & "/labels?" & BuildQuery(q))
     End Function
 
+    ' -------------------- Documents and Amazon business outcomes --------------------
     Private Async Function GetAndDownloadDocumentAsync(path As String, label As String) As Task(Of ApiResult)
         Dim metadata = Await CallSpApiAsync(path)
         If Not metadata.Ok Then Return metadata
@@ -667,6 +685,7 @@ Public Partial Class MainForm
         Return result
     End Function
 
+    ' -------------------- LWA authentication and SP-API transport --------------------
     Private Async Function GetAccessTokenAsync(Optional forceRefresh As Boolean = False) As Task(Of Tuple(Of String, Integer))
         If Not forceRefresh AndAlso CachedAccessToken <> "" AndAlso CachedAccessTokenExpiresUtc > DateTimeOffset.UtcNow.AddSeconds(60) Then
             Dim remaining = Math.Max(1, CInt((CachedAccessTokenExpiresUtc - DateTimeOffset.UtcNow).TotalSeconds))
@@ -903,6 +922,7 @@ Public Partial Class MainForm
         Return ""
     End Function
 
+    ' -------------------- Request validation and helpers --------------------
     Private Sub ValidateAmazonDocumentUrl(value As String, label As String)
         Dim uri As Uri = Nothing
         If Not Uri.TryCreate(value, UriKind.Absolute, uri) Then Throw New AppException("Amazon returned an invalid URL for the " & label, 502, "INVALID_DOCUMENT_URL")
@@ -1162,6 +1182,7 @@ Public Partial Class MainForm
         End Try
     End Function
 
+    ' -------------------- Error normalization for the view --------------------
     Private Function LocalFailure(ex As AppException) As ApiResult
         Dim action = "Correct the request values and run the operation again."
         Dim retryable = False

@@ -50,6 +50,8 @@ End Module
 Public Partial Class MainForm
     Inherits Form
 
+    ' View / UX only. Amazon request construction and transport live in ApiRequests.vb.
+
     Private Class Marketplace
         Public Property Id As String
         Public Property Name As String
@@ -380,6 +382,7 @@ Public Partial Class MainForm
         FieldValues("confirmed") = False
     End Sub
 
+    ' -------------------- Window and controls --------------------
     Private Sub BuildUi()
         Dim root As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 1, .RowCount = 2, .Padding = New Padding(10)}
         root.RowStyles.Add(New RowStyle(SizeType.AutoSize))
@@ -670,6 +673,7 @@ Public Partial Class MainForm
         btnRun.Enabled = operation.Kind <> "legacy"
     End Sub
 
+    ' -------------------- Request-form UX --------------------
     Private Sub BuildOperationFields()
         If requestPanel Is Nothing Then Return
         requestPanel.SuspendLayout()
@@ -984,11 +988,6 @@ Public Partial Class MainForm
         Return If(IsSandbox(), "sandbox", "production")
     End Function
 
-    Private Function Endpoint() As String
-        Dim prefix = If(IsSandbox(), "https://sandbox.sellingpartnerapi-", "https://sellingpartnerapi-")
-        Return prefix & SelectedMarketplace().Region & ".amazon.com"
-    End Function
-
     Private Function OperationHelp(operation As String) As String
         Select Case operation
             Case "catalog" : Return "Find a catalogue item by ASIN/SKU/other identifier, or search by keywords. Related ASIN fetching is optional."
@@ -1227,6 +1226,7 @@ Public Partial Class MainForm
         Return txtClientId.Text.Trim().Length > 0 AndAlso txtClientSecret.Text.Trim().Length > 0 AndAlso txtRefreshToken.Text.Trim().Length > 0
     End Function
 
+    ' -------------------- User actions and workflow orchestration --------------------
     Private Async Function TestConnectionAsync() As Task
         If Not CredentialsReady() Then
             MessageBox.Show("Client ID, client secret, and refresh token are required.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning)
@@ -1234,8 +1234,7 @@ Public Partial Class MainForm
         End If
         ToggleBusy(True, "Testing connection...")
         Try
-            Dim token = Await GetAccessTokenAsync(True)
-            Dim probe = Await CallSpApiAsync("/sellers/v1/marketplaceParticipations", HttpMethod.Get, Nothing, token.Item1)
+            Dim probe = Await TestConnectionRequestAsync()
             If Not probe.Ok Then
                 ConnectionVerified = False
                 lblConnection.Text = "Connection failed - see Result"
@@ -1394,6 +1393,7 @@ Public Partial Class MainForm
         sb.Append(Serializer.Serialize(value))
     End Sub
 
+    ' -------------------- Results and follow-up UX --------------------
     Private Sub ShowResult(operation As String, result As ApiResult)
         LastResult = result
         lblMeta.Text = result.Status.ToString(CultureInfo.InvariantCulture) & " " & result.StatusText & If(result.DurationMs > 0, "  |  " & result.DurationMs.ToString(CultureInfo.InvariantCulture) & " ms", "") & If(result.RequestId <> "", "  |  Request " & result.RequestId, "") & If(result.RateLimit <> "", "  |  " & result.RateLimit & " req/s", "")
