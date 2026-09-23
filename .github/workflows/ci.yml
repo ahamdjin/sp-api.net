@@ -62,6 +62,42 @@ jobs:
           foreach ($value in $contractChecks) {
             if (-not $source.Contains($value)) { throw "Missing SP-API contract guard: $value" }
           }
+
+          $safetyChecks = @(
+            'SecurityProtocolType.SystemDefault',
+            'AutomaticDecompression = DecompressionMethods.GZip Or DecompressionMethods.Deflate',
+            'DefaultProxyCredentials = CredentialCache.DefaultCredentials',
+            'Private Const PreviewLimit As Integer = 2 * 1024 * 1024',
+            'CancellationTokenSource(TimeSpan.FromSeconds(30))',
+            'AMBIGUOUS_WRITE_RESULT',
+            'Confirm Production write',
+            'ValidateContentType(contentType)',
+            'ClearWriteConfirmation()',
+            'Next: Prepare next page',
+            'Open selected'
+          )
+          foreach ($value in $safetyChecks) {
+            if (-not $source.Contains($value)) { throw "Missing reliability/safety guard: $value" }
+          }
+
+          $banned = @(
+            'ServerCertificateCustomValidationCallback',
+            'CertificatePolicy',
+            'Thread.Sleep',
+            'NODE_TLS_REJECT_UNAUTHORIZED',
+            'SecurityProtocolType.Ssl3',
+            'strict-ssl=false',
+            'amzn1.application-oa2-client.',
+            'Atzr|'
+          )
+          foreach ($value in $banned) {
+            if ($source.Contains($value)) { throw "Unsafe or hard-coded pattern found: $value" }
+          }
+
+          $project = Get-Content "SP-API.NET.vbproj" -Raw
+          if (-not $project.Contains('<TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>')) {
+            throw "Unexpected .NET Framework target."
+          }
       - name: Build Debug like Visual Studio F5
         run: msbuild SP-API.NET.sln /m /p:Configuration=Debug /p:Platform="Any CPU"
       - name: Build Release
