@@ -1175,6 +1175,20 @@ Public Class MainForm
             Return
         End If
 
+        If IsWriteOperation(CurrentOperation) AndAlso Not IsSandbox() Then
+            Dim operationLabel = Operations.First(Function(x) x.Id = CurrentOperation).Label
+            Dim confirmation = MessageBox.Show(
+                "This will send a live Production write to Amazon." & Environment.NewLine & Environment.NewLine &
+                "Operation: " & operationLabel & Environment.NewLine &
+                "Marketplace: " & SelectedMarketplace().Name & Environment.NewLine & Environment.NewLine &
+                "Continue?",
+                "Confirm Production write",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2)
+            If confirmation <> DialogResult.Yes Then Return
+        End If
+
         ToggleBusy(True, "Waiting for Amazon...")
         LastDocumentUrl = ""
         btnOpenDocument.Visible = False
@@ -1183,10 +1197,15 @@ Public Class MainForm
             LastResult = result
             ApplyReturnedIds(CurrentOperation, result.Data)
             ShowResult(CurrentOperation, result)
+            UpdateConnectionFromResult(result)
         Catch ex As AppException
-            ShowResult(CurrentOperation, LocalFailure(ex))
+            Dim failure = LocalFailure(ex)
+            ShowResult(CurrentOperation, failure)
+            UpdateConnectionFromResult(failure)
         Catch ex As Exception
-            ShowResult(CurrentOperation, LocalFailure(New AppException(ex.Message, 500, "CLIENT_INTERNAL_ERROR", ex.ToString())))
+            Dim failure = LocalFailure(New AppException(ex.Message, 500, "CLIENT_INTERNAL_ERROR", ex.ToString()))
+            ShowResult(CurrentOperation, failure)
+            UpdateConnectionFromResult(failure)
         Finally
             ToggleBusy(False, "")
         End Try
@@ -1196,8 +1215,35 @@ Public Class MainForm
         btnRun.Enabled = Not busy AndAlso Operations.First(Function(x) x.Id = CurrentOperation).Kind <> "legacy"
         btnTest.Enabled = Not busy
         operationTree.Enabled = Not busy
+        requestPanel.Enabled = Not busy
+        txtClientId.Enabled = Not busy
+        txtClientSecret.Enabled = Not busy
+        txtRefreshToken.Enabled = Not busy
+        cboEnvironment.Enabled = Not busy
+        cboMarketplace.Enabled = Not busy
+        chkShowSecrets.Enabled = Not busy
         Cursor = If(busy, Cursors.WaitCursor, Cursors.Default)
         If busy Then lblMeta.Text = message
+    End Sub
+
+    Private Sub UpdateConnectionFromResult(result As ApiResult)
+        If result.Ok Then
+            ConnectionVerified = True
+            lblConnection.Text = "Connected to " & EnvironmentName() & " - " & SelectedMarketplace().Name
+            lblConnection.ForeColor = Color.DarkGreen
+            Return
+        End If
+
+        Dim code = If(result.Problem Is Nothing, "", result.Problem.Code).ToLowerInvariant()
+        If result.Status = 401 OrElse code.Contains("invalid_grant") OrElse code.Contains("invalid_client") OrElse code.Contains("lwa_") Then
+            ConnectionVerified = False
+            lblConnection.Text = "Authentication failed - see Result"
+            lblConnection.ForeColor = Color.DarkRed
+        ElseIf code.Contains("amazon_network_error") OrElse code.Contains("amazon_timeout") OrElse code.Contains("no_response") Then
+            ConnectionVerified = False
+            lblConnection.Text = "Connection problem - see Result"
+            lblConnection.ForeColor = Color.DarkRed
+        End If
     End Sub
 
     Private Function IsWriteOperation(operation As String) As Boolean
