@@ -13,3 +13,13 @@ jobs:
       - uses: microsoft/setup-msbuild@v2
       - name: Build VB.NET solution
         run: msbuild SP-API.NET.sln /m /p:Configuration=Release /p:Platform="Any CPU"
+      - name: Smoke-start desktop app
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path "bin\Release\SP-API.NET.exe"
+          $process = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 5
+          if ($process.HasExited) {
+            throw "SP-API.NET exited during startup with code $($process.ExitCode)."
+          }
+          Stop-Process -Id $process.Id -Force
