@@ -239,7 +239,7 @@ Public Class MainForm
         InitializeFieldValues()
         BuildUi()
         BuildOperationTree()
-        SelectOperation("catalog")
+        NavigateToOperation("catalog")
     End Sub
 
     Public Sub RunCiSelfTest()
