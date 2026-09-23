@@ -1227,22 +1227,26 @@ Public Class MainForm
     End Sub
 
     Private Sub UpdateConnectionFromResult(result As ApiResult)
-        If result.Ok Then
-            ConnectionVerified = True
-            lblConnection.Text = "Connected to " & EnvironmentName() & " - " & SelectedMarketplace().Name
-            lblConnection.ForeColor = Color.DarkGreen
-            Return
-        End If
-
         Dim code = If(result.Problem Is Nothing, "", result.Problem.Code).ToLowerInvariant()
+
         If result.Status = 401 OrElse code.Contains("invalid_grant") OrElse code.Contains("invalid_client") OrElse code.Contains("lwa_") Then
             ConnectionVerified = False
             lblConnection.Text = "Authentication failed - see Result"
             lblConnection.ForeColor = Color.DarkRed
-        ElseIf code.Contains("amazon_network_error") OrElse code.Contains("amazon_timeout") OrElse code.Contains("no_response") Then
+            Return
+        End If
+
+        If code.Contains("amazon_network_error") OrElse code.Contains("amazon_timeout") OrElse code.Contains("no_response") Then
             ConnectionVerified = False
             lblConnection.Text = "Connection problem - see Result"
             lblConnection.ForeColor = Color.DarkRed
+            Return
+        End If
+
+        If result.Ok OrElse result.RequestId <> "" Then
+            ConnectionVerified = True
+            lblConnection.Text = "Connected to " & EnvironmentName() & " - " & SelectedMarketplace().Name
+            lblConnection.ForeColor = Color.DarkGreen
         End If
     End Sub
 
