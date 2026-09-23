@@ -187,6 +187,7 @@ Public Class MainForm
     Private ReadOnly cboMarketplace As New ComboBox()
     Private ReadOnly btnTest As New Button()
     Private ReadOnly lblConnection As New Label()
+    Private ReadOnly chkShowSecrets As New CheckBox()
     Private ReadOnly operationTree As New TreeView()
     Private ReadOnly requestPanel As New FlowLayoutPanel()
     Private ReadOnly lblOperation As New Label()
@@ -204,6 +205,8 @@ Public Class MainForm
     Private LastDocumentUrl As String = ""
     Private NextOperationId As String = ""
     Private ConnectionVerified As Boolean
+    Private CachedAccessToken As String = ""
+    Private CachedAccessTokenExpiresUtc As DateTimeOffset = DateTimeOffset.MinValue
 
     Private Const CoreOrderData As String = "PROCEEDS,EXPENSE,PROMOTION,CANCELLATION,FULFILLMENT,PACKAGES,TAX,PAYMENT,FULFILLMENT_ORDERS"
     Private Const DefaultCatalogData As String = "attributes,classifications,dimensions,identifiers,images,productTypes,relationships,salesRanks,summaries,vendorDetails"
@@ -357,6 +360,25 @@ Public Class MainForm
         lblConnection.Text = "Not tested"
         lblConnection.ForeColor = Color.DimGray
         cGrid.Controls.Add(lblConnection, 5, 1)
+
+        chkShowSecrets.Text = "Show Client Secret and Refresh Token"
+        chkShowSecrets.AutoSize = True
+        chkShowSecrets.Margin = New Padding(3, 6, 3, 4)
+        AddHandler chkShowSecrets.CheckedChanged, Sub(sender, e)
+                                                      txtClientSecret.UseSystemPasswordChar = Not chkShowSecrets.Checked
+                                                      txtRefreshToken.UseSystemPasswordChar = Not chkShowSecrets.Checked
+                                                  End Sub
+        cGrid.Controls.Add(chkShowSecrets, 0, 2)
+        cGrid.SetColumnSpan(chkShowSecrets, 2)
+
+        Dim credentialNote As New Label With {
+            .Text = "Credentials stay in this running app only; they are not saved to disk.",
+            .AutoSize = True,
+            .ForeColor = Color.DimGray,
+            .Margin = New Padding(3, 8, 3, 4)
+        }
+        cGrid.Controls.Add(credentialNote, 2, 2)
+        cGrid.SetColumnSpan(credentialNote, 4)
 
         AddHandler txtClientId.TextChanged, Sub(sender, e) InvalidateConnectionState()
         AddHandler txtClientSecret.TextChanged, Sub(sender, e) InvalidateConnectionState()
@@ -842,6 +864,8 @@ Public Class MainForm
 
     Private Sub InvalidateConnectionState()
         ConnectionVerified = False
+        CachedAccessToken = ""
+        CachedAccessTokenExpiresUtc = DateTimeOffset.MinValue
         FieldValues("confirmed") = False
         lblConnection.Text = "Not tested"
         lblConnection.ForeColor = Color.DimGray
@@ -1045,7 +1069,7 @@ Public Class MainForm
         End If
         ToggleBusy(True, "Testing connection...")
         Try
-            Dim token = Await GetAccessTokenAsync()
+            Dim token = Await GetAccessTokenAsync(True)
             Dim probe = Await CallSpApiAsync("/sellers/v1/marketplaceParticipations", HttpMethod.Get, Nothing, token.Item1)
             If Not probe.Ok Then
                 ConnectionVerified = False
@@ -1685,7 +1709,12 @@ Public Class MainForm
         Return result
     End Function
 
-    Private Async Function GetAccessTokenAsync() As Task(Of Tuple(Of String, Integer))
+    Private Async Function GetAccessTokenAsync(Optional forceRefresh As Boolean = False) As Task(Of Tuple(Of String, Integer))
+        If Not forceRefresh AndAlso CachedAccessToken <> "" AndAlso CachedAccessTokenExpiresUtc > DateTimeOffset.UtcNow.AddSeconds(60) Then
+            Dim remaining = Math.Max(1, CInt((CachedAccessTokenExpiresUtc - DateTimeOffset.UtcNow).TotalSeconds))
+            Return Tuple.Create(CachedAccessToken, remaining)
+        End If
+
         Dim pairs As New Dictionary(Of String, String) From {
             {"grant_type", "refresh_token"}, {"refresh_token", txtRefreshToken.Text.Trim()}, {"client_id", txtClientId.Text.Trim()}, {"client_secret", txtClientSecret.Text.Trim()}
         }
@@ -1696,12 +1725,22 @@ Public Class MainForm
                                                End Function, RetryMode.SafePost)
         Using response = outcome.Item1
             Dim data = ParseJson(Await response.Content.ReadAsStringAsync())
-            If Not response.IsSuccessStatusCode Then Throw New AppException(ExtractMessage(data, "Amazon rejected the supplied LWA credentials"), CInt(response.StatusCode), ExtractCode(data, "LWA_AUTH_FAILED"), Json(data))
+            If Not response.IsSuccessStatusCode Then
+                CachedAccessToken = ""
+                CachedAccessTokenExpiresUtc = DateTimeOffset.MinValue
+                Throw New AppException(ExtractMessage(data, "Amazon rejected the supplied LWA credentials"), CInt(response.StatusCode), ExtractCode(data, "LWA_AUTH_FAILED"), Json(data))
+            End If
+
             Dim dict = AsDict(data)
             Dim token = StringValue(GetValue(dict, "access_token"))
             If token = "" Then Throw New AppException("Amazon returned no access token", 502, "LWA_TOKEN_MISSING", Json(data))
+
             Dim expires As Integer = 3600
             Integer.TryParse(Convert.ToString(GetValue(dict, "expires_in"), CultureInfo.InvariantCulture), expires)
+            If expires < 1 Then expires = 3600
+
+            CachedAccessToken = token
+            CachedAccessTokenExpiresUtc = DateTimeOffset.UtcNow.AddSeconds(expires)
             Return Tuple.Create(token, expires)
         End Using
     End Function
@@ -1738,7 +1777,13 @@ Public Class MainForm
                 .TraceId = Header(response, "x-amzn-trace-id"), .RateLimit = Header(response, "x-amzn-ratelimit-limit"),
                 .Data = data, .DurationMs = sw.ElapsedMilliseconds, .Attempts = outcome.Item2
             }
-            If Not result.Ok Then result.Problem = BuildProblem(result.Status, result.StatusText, data, method, Header(response, "x-amzn-errortype"))
+            If Not result.Ok Then
+                If result.Status = 401 Then
+                    CachedAccessToken = ""
+                    CachedAccessTokenExpiresUtc = DateTimeOffset.MinValue
+                End If
+                result.Problem = BuildProblem(result.Status, result.StatusText, data, method, Header(response, "x-amzn-errortype"))
+            End If
             Return result
         End Using
     End Function
