@@ -198,11 +198,13 @@ Public Class MainForm
     Private ReadOnly txtRaw As New TextBox()
     Private ReadOnly btnOpenDocument As New Button()
     Private ReadOnly btnNextStep As New Button()
+    Private ReadOnly cboDocuments As New ComboBox()
     Private ReadOnly tabs As New TabControl()
 
     Private CurrentOperation As String = "catalog"
     Private LastResult As ApiResult
     Private LastDocumentUrl As String = ""
+    Private ReadOnly DocumentUrls As New List(Of KeyValuePair(Of String, String))()
     Private NextOperationId As String = ""
     Private ConnectionVerified As Boolean
     Private CachedAccessToken As String = ""
@@ -269,6 +271,14 @@ Public Class MainForm
 
         If SafeHttpsUrl("http://example.com/file") <> "" Then Throw New InvalidOperationException("HTTP document URLs must be rejected.")
         If SafeHttpsUrl("https://example.com/file") = "" Then Throw New InvalidOperationException("HTTPS document URLs should be accepted.")
+
+        Dim testDocuments = New Dictionary(Of String, Object) From {
+            {"documentDownloads", New Object() {
+                New Dictionary(Of String, Object) From {{"uri", "https://example.com/one.pdf"}, {"downloadType", "PDF"}},
+                New Dictionary(Of String, Object) From {{"uri", "https://example.com/two.pdf"}, {"downloadType", "ZPL"}}
+            }}
+        }
+        If FindDocumentUrls(testDocuments).Count <> 2 Then Throw New InvalidOperationException("All returned document links must remain accessible.")
 
         cboEnvironment.SelectedIndex = 0
         SelectMarketplaceById("ATVPDKIKX0DER")
@@ -464,6 +474,11 @@ Public Class MainForm
         AddHandler btnNextStep.Click, AddressOf OpenNextStep
         resultActions.Controls.Add(btnNextStep)
 
+        cboDocuments.DropDownStyle = ComboBoxStyle.DropDownList
+        cboDocuments.Width = 190
+        cboDocuments.Visible = False
+        resultActions.Controls.Add(cboDocuments)
+
         btnOpenDocument.Text = "Open / download document"
         btnOpenDocument.AutoSize = True
         btnOpenDocument.Padding = New Padding(8, 2, 8, 2)
@@ -531,6 +546,9 @@ Public Class MainForm
         txtRaw.Text = If(operation.Kind = "legacy", "", "The complete Amazon response will appear here.")
         lblMeta.Text = ""
         btnOpenDocument.Visible = False
+        cboDocuments.Visible = False
+        cboDocuments.Items.Clear()
+        DocumentUrls.Clear()
         btnNextStep.Visible = False
         NextOperationId = ""
         btnRun.Enabled = operation.Kind <> "legacy"
@@ -2263,8 +2281,19 @@ Public Class MainForm
         If result.Problem IsNot Nothing Then envelope("problem") = New Dictionary(Of String, Object) From {{"code", result.Problem.Code}, {"message", result.Problem.Message}, {"details", result.Problem.Details}, {"action", result.Problem.Action}, {"retryable", result.Problem.Retryable}}
         txtRaw.Text = PrettyJson(envelope)
         txtResult.Text = BuildSummary(operation, result)
-        LastDocumentUrl = FindDocumentUrl(result.Data)
-        btnOpenDocument.Visible = LastDocumentUrl <> ""
+        DocumentUrls.Clear()
+        DocumentUrls.AddRange(FindDocumentUrls(result.Data))
+        LastDocumentUrl = If(DocumentUrls.Count > 0, DocumentUrls(0).Value, "")
+
+        cboDocuments.Items.Clear()
+        For Each document In DocumentUrls
+            cboDocuments.Items.Add(document.Key)
+        Next
+        If cboDocuments.Items.Count > 0 Then cboDocuments.SelectedIndex = 0
+        cboDocuments.Visible = DocumentUrls.Count > 1
+        btnOpenDocument.Text = If(DocumentUrls.Count > 1, "Open selected document", "Open / download document")
+        btnOpenDocument.Visible = DocumentUrls.Count > 0
+
         ConfigureNextStep(operation, result)
         tabs.SelectedIndex = 0
     End Sub
@@ -2401,22 +2430,43 @@ Public Class MainForm
     End Sub
 
     Private Function FindDocumentUrl(dataObj As Object) As String
+        Dim documents = FindDocumentUrls(dataObj)
+        If documents.Count = 0 Then Return ""
+        Return documents(0).Value
+    End Function
+
+    Private Function FindDocumentUrls(dataObj As Object) As List(Of KeyValuePair(Of String, String))
+        Dim output As New List(Of KeyValuePair(Of String, String))()
+        Dim seen As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
         Dim data = AsDict(dataObj)
+
         Dim direct = SafeHttpsUrl(StringValue(GetValue(data, "url")))
-        If direct <> "" Then Return direct
+        If direct <> "" AndAlso seen.Add(direct) Then
+            Dim label = StringValue(GetValue(data, "reportDocumentId"))
+            If label = "" Then label = StringValue(GetValue(data, "feedDocumentId"))
+            If label = "" Then label = "Amazon document"
+            output.Add(QPair(label, direct))
+        End If
 
         Dim downloads = ListValue(GetValue(data, "documentDownloads"))
-        If downloads.Count > 0 Then
-            Dim uri = SafeHttpsUrl(StringValue(GetValue(AsDict(downloads(0)), "uri")))
-            If uri <> "" Then Return uri
-        End If
+        For i As Integer = 0 To downloads.Count - 1
+            Dim download = AsDict(downloads(i))
+            Dim uri = SafeHttpsUrl(StringValue(GetValue(download, "uri")))
+            If uri = "" OrElse Not seen.Add(uri) Then Continue For
+            Dim label = StringValue(GetValue(download, "downloadType"))
+            If label = "" Then label = "Document " & (i + 1).ToString(CultureInfo.InvariantCulture)
+            output.Add(QPair(label, uri))
+        Next
 
         Dim payload = AsDict(GetValue(data, "payload"))
         For Each key In {"DownloadURL", "downloadURL", "downloadUrl"}
             Dim url = SafeHttpsUrl(StringValue(GetValue(payload, key)))
-            If url <> "" Then Return url
+            If url <> "" AndAlso seen.Add(url) Then
+                output.Add(QPair("Amazon document", url))
+            End If
         Next
-        Return ""
+
+        Return output
     End Function
 
     Private Function SafeHttpsUrl(value As String) As String
@@ -2483,7 +2533,13 @@ Public Class MainForm
     End Sub
 
     Private Sub OpenDocument(sender As Object, e As EventArgs)
+        If DocumentUrls.Count = 0 Then Return
+
+        Dim index = cboDocuments.SelectedIndex
+        If index < 0 OrElse index >= DocumentUrls.Count Then index = 0
+        LastDocumentUrl = DocumentUrls(index).Value
         If LastDocumentUrl = "" Then Return
+
         Try
             Process.Start(LastDocumentUrl)
         Catch ex As Exception
