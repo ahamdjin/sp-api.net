@@ -2240,19 +2240,29 @@ Public Class MainForm
 
     Private Function FindDocumentUrl(dataObj As Object) As String
         Dim data = AsDict(dataObj)
-        Dim direct = StringValue(GetValue(data, "url"))
+        Dim direct = SafeHttpsUrl(StringValue(GetValue(data, "url")))
         If direct <> "" Then Return direct
+
         Dim downloads = ListValue(GetValue(data, "documentDownloads"))
         If downloads.Count > 0 Then
-            Dim uri = StringValue(GetValue(AsDict(downloads(0)), "uri"))
+            Dim uri = SafeHttpsUrl(StringValue(GetValue(AsDict(downloads(0)), "uri")))
             If uri <> "" Then Return uri
         End If
+
         Dim payload = AsDict(GetValue(data, "payload"))
         For Each key In {"DownloadURL", "downloadURL", "downloadUrl"}
-            Dim u = StringValue(GetValue(payload, key))
-            If u <> "" Then Return u
+            Dim url = SafeHttpsUrl(StringValue(GetValue(payload, key)))
+            If url <> "" Then Return url
         Next
         Return ""
+    End Function
+
+    Private Function SafeHttpsUrl(value As String) As String
+        If value = "" Then Return ""
+        Dim uri As Uri = Nothing
+        If Not Uri.TryCreate(value, UriKind.Absolute, uri) Then Return ""
+        If uri.Scheme <> Uri.UriSchemeHttps Then Return ""
+        Return uri.AbsoluteUri
     End Function
 
     Private Sub OpenDocument(sender As Object, e As EventArgs)
