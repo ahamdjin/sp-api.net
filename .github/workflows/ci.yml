@@ -11,12 +11,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: microsoft/setup-msbuild@v2
-      - name: Build VB.NET solution
+      - name: Verify SP-API surface
+        shell: pwsh
+        run: |
+          $source = Get-Content "MainForm.vb" -Raw
+          $required = @(
+            "/sellers/v1/marketplaceParticipations",
+            "/catalog/2022-04-01/items",
+            "/products/fees/v0/",
+            "/fba/inventory/v1/summaries",
+            "/orders/2026-01-01/orders",
+            "/reports/2021-06-30/",
+            "/feeds/2021-06-30/",
+            "/inbound/fba/2024-03-20/",
+            "/fba/inbound/v0/shipments/"
+          )
+          foreach ($value in $required) {
+            if (-not $source.Contains($value)) { throw "Missing required SP-API route: $value" }
+          }
+          $operations = @(
+            "catalog","fees","inventory","orders","order","reports","createReport","report","reportDocument",
+            "feeds","feed","feedDocument","submitFeed","inboundPlans","inboundPlan","inboundShipment",
+            "inboundOperationStatus","prepDetails","createInboundPlan","itemLabels","shipmentLabels","billOfLading"
+          )
+          foreach ($operation in $operations) {
+            if (-not $source.Contains('.Id = "' + $operation + '"')) { throw "Missing operation: $operation" }
+          }
+      - name: Build Debug like Visual Studio F5
+        run: msbuild SP-API.NET.sln /m /p:Configuration=Debug /p:Platform="Any CPU"
+      - name: Build Release
         run: msbuild SP-API.NET.sln /m /p:Configuration=Release /p:Platform="Any CPU"
       - name: Smoke-start desktop app
         shell: pwsh
         run: |
-          $exe = Resolve-Path "bin\Release\SP-API.NET.exe"
+          $exe = Resolve-Path "bin\Debug\SP-API.NET.exe"
           $env:SP_API_CI_SMOKE = "1"
           $process = Start-Process -FilePath $exe -PassThru -Wait
           if ($process.ExitCode -ne 0) {
