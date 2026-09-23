@@ -1,0 +1,200 @@
+Option Explicit On
+Option Strict On
+Option Infer On
+
+Imports System
+Imports System.Collections
+Imports System.Collections.Generic
+Imports System.Diagnostics
+Imports System.Drawing
+Imports System.Globalization
+Imports System.IO
+Imports System.IO.Compression
+Imports System.Linq
+Imports System.Net
+Imports System.Net.Http
+Imports System.Net.Http.Headers
+Imports System.Text
+Imports System.Text.RegularExpressions
+Imports System.Threading.Tasks
+Imports System.Web
+Imports System.Web.Script.Serialization
+Imports System.Windows.Forms
+
+Module Program
+    <STAThread>
+    Public Sub Main()
+        ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12
+        Application.EnableVisualStyles()
+        Application.SetCompatibleTextRenderingDefault(False)
+        Application.Run(New MainForm())
+    End Sub
+End Module
+
+Public Class MainForm
+    Inherits Form
+
+    Private Class Marketplace
+        Public Property Id As String
+        Public Property Name As String
+        Public Property Region As String
+        Public Property Currency As String
+        Public Property Locale As String
+        Public Overrides Function ToString() As String
+            Return Name & " (" & Id & ")"
+        End Function
+    End Class
+
+    Private Class ApiProblem
+        Public Property Code As String = ""
+        Public Property Message As String = ""
+        Public Property Details As String = ""
+        Public Property Action As String = ""
+        Public Property Retryable As Boolean
+    End Class
+
+    Private Class ApiResult
+        Public Property Ok As Boolean
+        Public Property Status As Integer
+        Public Property StatusText As String = ""
+        Public Property RequestId As String = ""
+        Public Property GatewayId As String = ""
+        Public Property TraceId As String = ""
+        Public Property RateLimit As String = ""
+        Public Property DurationMs As Long
+        Public Property Attempts As Integer
+        Public Property Data As Object
+        Public Property Problem As ApiProblem
+        Public Property ErrorMessage As String = ""
+    End Class
+
+    Private Class AppException
+        Inherits Exception
+        Public ReadOnly Property Status As Integer
+        Public ReadOnly Property Code As String
+        Public ReadOnly Property Details As String
+        Public Sub New(message As String, Optional status As Integer = 400, Optional code As String = "INPUT_VALIDATION", Optional details As String = "")
+            MyBase.New(message)
+            Me.Status = status
+            Me.Code = code
+            Me.Details = details
+        End Sub
+    End Class
+
+    Private Class OperationInfo
+        Public Property Id As String = ""
+        Public Property Label As String = ""
+        Public Property Kind As String = "read"
+        Public Property Group As String = ""
+        Public Overrides Function ToString() As String
+            Return Label
+        End Function
+    End Class
+
+    Private Enum RetryMode
+        ReadRequest
+        WriteRequest
+        SafePost
+    End Enum
+
+    Private Shared ReadOnly Serializer As New JavaScriptSerializer With {
+        .MaxJsonLength = Integer.MaxValue,
+        .RecursionLimit = 200
+    }
+
+    Private Shared ReadOnly Http As New HttpClient(New HttpClientHandler With {
+        .AutomaticDecompression = DecompressionMethods.GZip Or DecompressionMethods.Deflate
+    }) With {.Timeout = TimeSpan.FromSeconds(30)}
+
+    Private ReadOnly Marketplaces As New List(Of Marketplace) From {
+        New Marketplace With {.Id = "ATVPDKIKX0DER", .Name = "United States", .Region = "na", .Currency = "USD", .Locale = "en_US"},
+        New Marketplace With {.Id = "A2EUQ1WTGCTBG2", .Name = "Canada", .Region = "na", .Currency = "CAD", .Locale = "en_CA"},
+        New Marketplace With {.Id = "A1AM78C64UM0Y8", .Name = "Mexico", .Region = "na", .Currency = "MXN", .Locale = "es_MX"},
+        New Marketplace With {.Id = "A2Q3Y263D00KWC", .Name = "Brazil", .Region = "na", .Currency = "BRL", .Locale = "pt_BR"},
+        New Marketplace With {.Id = "A28R8C7NBKEWEA", .Name = "Ireland", .Region = "eu", .Currency = "EUR", .Locale = "en_IE"},
+        New Marketplace With {.Id = "A1F83G8C2ARO7P", .Name = "United Kingdom", .Region = "eu", .Currency = "GBP", .Locale = "en_GB"},
+        New Marketplace With {.Id = "A1PA6795UKMFR9", .Name = "Germany", .Region = "eu", .Currency = "EUR", .Locale = "de_DE"},
+        New Marketplace With {.Id = "A13V1IB3VIYZZH", .Name = "France", .Region = "eu", .Currency = "EUR", .Locale = "fr_FR"},
+        New Marketplace With {.Id = "AMEN7PMS3EDWL", .Name = "Belgium", .Region = "eu", .Currency = "EUR", .Locale = "fr_BE"},
+        New Marketplace With {.Id = "APJ6JRA9NG5V4", .Name = "Italy", .Region = "eu", .Currency = "EUR", .Locale = "it_IT"},
+        New Marketplace With {.Id = "A1RKKUPIHCS9HS", .Name = "Spain", .Region = "eu", .Currency = "EUR", .Locale = "es_ES"},
+        New Marketplace With {.Id = "A1805IZSGTT6HS", .Name = "Netherlands", .Region = "eu", .Currency = "EUR", .Locale = "nl_NL"},
+        New Marketplace With {.Id = "A2NODRKZP88ZB9", .Name = "Sweden", .Region = "eu", .Currency = "SEK", .Locale = "sv_SE"},
+        New Marketplace With {.Id = "AE08WJ6YKNBMC", .Name = "South Africa", .Region = "eu", .Currency = "ZAR", .Locale = "en_ZA"},
+        New Marketplace With {.Id = "A1C3SOZRARQ6R3", .Name = "Poland", .Region = "eu", .Currency = "PLN", .Locale = "pl_PL"},
+        New Marketplace With {.Id = "ARBP9OOSHTCHU", .Name = "Egypt", .Region = "eu", .Currency = "EGP", .Locale = "ar_EG"},
+        New Marketplace With {.Id = "A33AVAJ2PDY3EV", .Name = "Turkey", .Region = "eu", .Currency = "TRY", .Locale = "tr_TR"},
+        New Marketplace With {.Id = "A21TJRUUN4KGV", .Name = "India", .Region = "eu", .Currency = "INR", .Locale = "en_IN"},
+        New Marketplace With {.Id = "A2VIGQ35RCS4UG", .Name = "United Arab Emirates", .Region = "eu", .Currency = "AED", .Locale = "en_AE"},
+        New Marketplace With {.Id = "A17E79C6D8DWNP", .Name = "Saudi Arabia", .Region = "eu", .Currency = "SAR", .Locale = "ar_SA"},
+        New Marketplace With {.Id = "A1VC38T7YXB528", .Name = "Japan", .Region = "fe", .Currency = "JPY", .Locale = "ja_JP"},
+        New Marketplace With {.Id = "A39IBJ37TRP1C6", .Name = "Australia", .Region = "fe", .Currency = "AUD", .Locale = "en_AU"},
+        New Marketplace With {.Id = "A19VAU5U5O7RUS", .Name = "Singapore", .Region = "fe", .Currency = "SGD", .Locale = "en_SG"}
+    }
+
+    Private ReadOnly Operations As New List(Of OperationInfo) From {
+        New OperationInfo With {.Group = "Products", .Id = "catalog", .Label = "Catalogue item"},
+        New OperationInfo With {.Group = "Products", .Id = "fees", .Label = "Fee estimate"},
+        New OperationInfo With {.Group = "Products", .Id = "inventory", .Label = "FBA inventory"},
+        New OperationInfo With {.Group = "Orders", .Id = "orders", .Label = "Search orders"},
+        New OperationInfo With {.Group = "Orders", .Id = "order", .Label = "Get order"},
+        New OperationInfo With {.Group = "Reports", .Id = "reports", .Label = "List reports"},
+        New OperationInfo With {.Group = "Reports", .Id = "createReport", .Label = "Request report", .Kind = "write"},
+        New OperationInfo With {.Group = "Reports", .Id = "report", .Label = "Report status"},
+        New OperationInfo With {.Group = "Reports", .Id = "reportDocument", .Label = "Report document"},
+        New OperationInfo With {.Group = "Feeds", .Id = "feeds", .Label = "List feeds"},
+        New OperationInfo With {.Group = "Feeds", .Id = "feed", .Label = "Feed status"},
+        New OperationInfo With {.Group = "Feeds", .Id = "feedDocument", .Label = "Feed processing report"},
+        New OperationInfo With {.Group = "Feeds", .Id = "submitFeed", .Label = "Submit feed", .Kind = "write"},
+        New OperationInfo With {.Group = "FBA inbound", .Id = "inboundPlans", .Label = "List plans"},
+        New OperationInfo With {.Group = "FBA inbound", .Id = "inboundPlan", .Label = "Get plan"},
+        New OperationInfo With {.Group = "FBA inbound", .Id = "inboundShipment", .Label = "Get shipment"},
+        New OperationInfo With {.Group = "FBA inbound", .Id = "inboundOperationStatus", .Label = "Operation status"},
+        New OperationInfo With {.Group = "FBA inbound", .Id = "prepDetails", .Label = "Prep details"},
+        New OperationInfo With {.Group = "FBA inbound", .Id = "createInboundPlan", .Label = "Create plan", .Kind = "write"},
+        New OperationInfo With {.Group = "FBA inbound", .Id = "itemLabels", .Label = "Item labels"},
+        New OperationInfo With {.Group = "FBA inbound", .Id = "shipmentLabels", .Label = "Shipment labels"},
+        New OperationInfo With {.Group = "FBA inbound", .Id = "billOfLading", .Label = "Bill of lading"}
+    }
+
+    Private ReadOnly FieldValues As New Dictionary(Of String, Object)(StringComparer.OrdinalIgnoreCase)
+    Private ReadOnly FieldControls As New Dictionary(Of String, Control)(StringComparer.OrdinalIgnoreCase)
+
+    Private ReadOnly txtClientId As New TextBox()
+    Private ReadOnly txtClientSecret As New TextBox()
+    Private ReadOnly txtRefreshToken As New TextBox()
+    Private ReadOnly cboEnvironment As New ComboBox()
+    Private ReadOnly cboMarketplace As New ComboBox()
+    Private ReadOnly btnTest As New Button()
+    Private ReadOnly lblConnection As New Label()
+    Private ReadOnly operationTree As New TreeView()
+    Private ReadOnly requestPanel As New FlowLayoutPanel()
+    Private ReadOnly lblOperation As New Label()
+    Private ReadOnly lblSandbox As New Label()
+    Private ReadOnly btnRun As New Button()
+    Private ReadOnly lblMeta As New Label()
+    Private ReadOnly txtResult As New TextBox()
+    Private ReadOnly txtRaw As New TextBox()
+    Private ReadOnly btnOpenDocument As New Button()
+    Private ReadOnly tabs As New TabControl()
+
+    Private CurrentOperation As String = "catalog"
+    Private LastResult As ApiResult
+    Private LastDocumentUrl As String = ""
+
+    Private Const CoreOrderData As String = "PROCEEDS,EXPENSE,PROMOTION,CANCELLATION,FULFILLMENT,PACKAGES,TAX,PAYMENT,FULFILLMENT_ORDERS"
+    Private Const DefaultCatalogData As String = "attributes,classifications,dimensions,identifiers,images,productTypes,relationships,salesRanks,summaries,vendorDetails"
+    Private Const PreviewLimit As Integer = 2 * 1024 * 1024
+
+    Public Sub New()
+        Text = "Amazon SP-API Workbench - VB.NET"
+        StartPosition = FormStartPosition.CenterScreen
+        MinimumSize = New Size(1120, 720)
+        Size = New Size(1450, 900)
+        Font = New Font("Segoe UI", 9.0F)
+        InitializeFieldValues()
+        BuildUi()
+        BuildOperationTree()
+        SelectOperation("catalog")
+    End Sub
+
