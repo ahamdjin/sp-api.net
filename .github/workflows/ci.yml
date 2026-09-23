@@ -34,8 +34,17 @@ jobs:
             "feeds","feed","feedDocument","submitFeed","inboundPlans","inboundPlan","inboundShipment",
             "inboundOperationStatus","prepDetails","createInboundPlan","itemLabels","shipmentLabels","billOfLading"
           )
+          $routerMatch = [regex]::Match(
+            $source,
+            'Private Async Function ExecuteOperationAsync\(operation As String\).*?End Function',
+            [System.Text.RegularExpressions.RegexOptions]::Singleline
+          )
+          if (-not $routerMatch.Success) { throw "Could not find ExecuteOperationAsync router." }
+          $router = $routerMatch.Value
+
           foreach ($operation in $operations) {
-            if (-not $source.Contains('.Id = "' + $operation + '"')) { throw "Missing operation: $operation" }
+            if (-not $source.Contains('.Id = "' + $operation + '"')) { throw "Missing operation in UI: $operation" }
+            if (-not $router.Contains('Case "' + $operation + '"')) { throw "Missing operation in execution router: $operation" }
           }
       - name: Build Debug like Visual Studio F5
         run: msbuild SP-API.NET.sln /m /p:Configuration=Debug /p:Platform="Any CPU"
