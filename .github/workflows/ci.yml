@@ -17,9 +17,10 @@ jobs:
         shell: pwsh
         run: |
           $exe = Resolve-Path "bin\Release\SP-API.NET.exe"
-          $process = Start-Process -FilePath $exe -PassThru
-          Start-Sleep -Seconds 5
-          if ($process.HasExited) {
-            throw "SP-API.NET exited during startup with code $($process.ExitCode)."
+          $env:SP_API_CI_SMOKE = "1"
+          $process = Start-Process -FilePath $exe -PassThru -Wait
+          if ($process.ExitCode -ne 0) {
+            $errorFile = Join-Path (Split-Path $exe) "smoke-error.txt"
+            if (Test-Path $errorFile) { Get-Content $errorFile }
+            throw "SP-API.NET startup smoke test failed with code $($process.ExitCode)."
           }
-          Stop-Process -Id $process.Id -Force

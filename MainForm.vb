@@ -28,6 +28,19 @@ Module Program
         ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12
         Application.EnableVisualStyles()
         Application.SetCompatibleTextRenderingDefault(False)
+
+        If String.Equals(Environment.GetEnvironmentVariable("SP_API_CI_SMOKE"), "1", StringComparison.Ordinal) Then
+            Try
+                Using form As New MainForm()
+                    Dim handle = form.Handle
+                End Using
+            Catch ex As Exception
+                File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "smoke-error.txt"), ex.ToString())
+                Environment.ExitCode = 1
+            End Try
+            Return
+        End If
+
         Application.Run(New MainForm())
     End Sub
 End Module
