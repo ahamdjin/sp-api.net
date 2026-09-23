@@ -34,6 +34,7 @@ Module Program
             Try
                 Using form As New MainForm()
                     Dim handle = form.Handle
+                    form.RunCiSelfTest()
                 End Using
             Catch ex As Exception
                 File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "smoke-error.txt"), ex.ToString())
@@ -217,6 +218,57 @@ Public Class MainForm
         InitializeFieldValues()
         BuildUi()
         BuildOperationTree()
+        SelectOperation("catalog")
+    End Sub
+
+    Public Sub RunCiSelfTest()
+        If Marketplaces.Count <> 23 Then Throw New InvalidOperationException("Marketplace list must contain 23 entries.")
+        If Marketplaces.Select(Function(m) m.Id).Distinct(StringComparer.Ordinal).Count() <> Marketplaces.Count Then Throw New InvalidOperationException("Marketplace IDs must be unique.")
+        If Operations.Select(Function(op) op.Id).Distinct(StringComparer.Ordinal).Count() <> Operations.Count Then Throw New InvalidOperationException("Operation IDs must be unique.")
+
+        cboEnvironment.SelectedIndex = 0
+        For Each operation In Operations
+            SelectOperation(operation.Id)
+            If requestPanel.Controls.Count = 0 Then Throw New InvalidOperationException("No UI controls were built for " & operation.Id & ".")
+
+            If operation.Kind <> "legacy" AndAlso operation.Id <> "inventory" Then
+                LoadSandboxExample()
+                If B("confirmed") Then Throw New InvalidOperationException("Sandbox examples must not auto-confirm writes for " & operation.Id & ".")
+            End If
+        Next
+
+        SelectOperation("catalog")
+        FieldValues("catalogMode") = "identifier"
+        BuildOperationFields()
+        LoadSandboxExample()
+        If S("query") <> "B07N4M94X4" Then Throw New InvalidOperationException("Catalog Sandbox example did not remain loaded.")
+        If S("identifierType") <> "ASIN" Then Throw New InvalidOperationException("Catalog Sandbox identifier type is incorrect.")
+
+        SelectOperation("createReport")
+        FieldValues("confirmed") = True
+        BuildOperationFields()
+        Dim reportTypeControl As Control = Nothing
+        If Not FieldControls.TryGetValue("reportType", reportTypeControl) Then Throw New InvalidOperationException("Create report field was not built.")
+        DirectCast(reportTypeControl, TextBox).Text = "GET_MERCHANT_LISTINGS_ALL_DATA_TEST"
+        If B("confirmed") Then Throw New InvalidOperationException("Changing a write input must invalidate confirmation.")
+
+        SelectMarketplaceById("ATVPDKIKX0DER")
+        cboEnvironment.SelectedIndex = 0
+        If Endpoint() <> "https://sandbox.sellingpartnerapi-na.amazon.com" Then Throw New InvalidOperationException("North America Sandbox endpoint is incorrect.")
+        cboEnvironment.SelectedIndex = 1
+        If Endpoint() <> "https://sellingpartnerapi-na.amazon.com" Then Throw New InvalidOperationException("North America Production endpoint is incorrect.")
+
+        SelectMarketplaceById("A1F83G8C2ARO7P")
+        If Endpoint() <> "https://sellingpartnerapi-eu.amazon.com" Then Throw New InvalidOperationException("Europe Production endpoint is incorrect.")
+
+        SelectMarketplaceById("A1VC38T7YXB528")
+        If Endpoint() <> "https://sellingpartnerapi-fe.amazon.com" Then Throw New InvalidOperationException("Far East Production endpoint is incorrect.")
+
+        If SafeHttpsUrl("http://example.com/file") <> "" Then Throw New InvalidOperationException("HTTP document URLs must be rejected.")
+        If SafeHttpsUrl("https://example.com/file") = "" Then Throw New InvalidOperationException("HTTPS document URLs should be accepted.")
+
+        cboEnvironment.SelectedIndex = 0
+        SelectMarketplaceById("ATVPDKIKX0DER")
         SelectOperation("catalog")
     End Sub
 
