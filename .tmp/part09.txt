@@ -1,0 +1,200 @@
+        Dim raw = S(key)
+        If raw = "" AndAlso fallback <> Integer.MinValue Then Return fallback
+        Dim value As Integer
+        If Not Integer.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, value) OrElse value < min OrElse value > max Then Throw New AppException(key & " must be an integer between " & min.ToString() & " and " & max.ToString(), 400, "INVALID_NUMBER")
+        Return value
+    End Function
+
+    Private Function DecimalField(key As String, min As Decimal, max As Decimal, Optional fallback As Decimal = Decimal.MinValue) As Decimal
+        Dim raw = S(key)
+        If raw = "" AndAlso fallback <> Decimal.MinValue Then Return fallback
+        Dim value As Decimal
+        If Not Decimal.TryParse(raw, NumberStyles.Number, CultureInfo.InvariantCulture, value) OrElse value < min OrElse value > max Then Throw New AppException(key & " must be a number between " & min.ToString(CultureInfo.InvariantCulture) & " and " & max.ToString(CultureInfo.InvariantCulture), 400, "INVALID_NUMBER")
+        Return value
+    End Function
+
+    Private Function SplitValues(value As String, max As Integer) As List(Of String)
+        If String.IsNullOrWhiteSpace(value) Then Return New List(Of String)()
+        Dim values = Regex.Split(value, "[\r\n,]+").Select(Function(x) x.Trim()).Where(Function(x) x <> "").ToList()
+        If values.Count > max Then Throw New AppException("At most " & max.ToString() & " values are allowed", 400, "TOO_MANY_VALUES")
+        Return values
+    End Function
+
+    Private Sub ValidateEnum(values As List(Of String), allowedValues As IEnumerable(Of String), key As String)
+        Dim allowed As New HashSet(Of String)(allowedValues, StringComparer.Ordinal)
+        Dim invalid = values.Where(Function(x) Not allowed.Contains(x)).ToList()
+        If invalid.Count > 0 Then Throw New AppException(key & " contains unsupported value(s): " & String.Join(",", invalid), 400, "INVALID_ENUM_VALUE")
+    End Sub
+
+    Private Sub AddEnumParam(q As List(Of KeyValuePair(Of String, String)), key As String, value As String, allowed As IEnumerable(Of String))
+        If value = "" Then Return
+        ValidateEnum(New List(Of String) From {value}, allowed, key)
+        q.Add(Pair(key, value))
+    End Sub
+
+    Private Sub AddOptionalInteger(q As List(Of KeyValuePair(Of String, String)), queryKey As String, fieldKey As String, min As Integer, Optional max As Integer = Integer.MaxValue)
+        If S(fieldKey) = "" Then Return
+        q.Add(Pair(queryKey, IntField(fieldKey, min, max).ToString(CultureInfo.InvariantCulture)))
+    End Sub
+
+    Private Sub AddCsvParam(q As List(Of KeyValuePair(Of String, String)), key As String, value As String, max As Integer)
+        Dim values = SplitValues(value, max)
+        If values.Count > 0 Then q.Add(Pair(key, String.Join(",", values)))
+    End Sub
+
+    Private Sub AddOptional(q As List(Of KeyValuePair(Of String, String)), key As String, value As String)
+        If value <> "" Then q.Add(Pair(key, value))
+    End Sub
+
+    Private Sub AddOptionalObject(dict As Dictionary(Of String, Object), key As String, value As String)
+        If value <> "" Then dict(key) = value
+    End Sub
+
+    Private Function Pair(key As String, value As String) As KeyValuePair(Of String, String)
+        Return New KeyValuePair(Of String, String)(key, value)
+    End Function
+
+    Private Function Query(items As IEnumerable(Of KeyValuePair(Of String, String))) As String
+        Return String.Join("&", items.Select(Function(p) Encode(p.Key) & "=" & Encode(p.Value)))
+    End Function
+
+    Private Function Encode(value As String) As String
+        Return Uri.EscapeDataString(value)
+    End Function
+
+    Private Function Money(currency As String, amount As Decimal) As Dictionary(Of String, Object)
+        Return New Dictionary(Of String, Object) From {{"CurrencyCode", currency}, {"Amount", amount}}
+    End Function
+
+    Private Function Header(response As HttpResponseMessage, name As String) As String
+        Dim values As IEnumerable(Of String) = Nothing
+        If response.Headers.TryGetValues(name, values) Then Return values.FirstOrDefault()
+        Return ""
+    End Function
+
+    Private Function ParseJson(raw As String) As Object
+        If String.IsNullOrWhiteSpace(raw) Then Return Nothing
+        Try
+            Return Serializer.DeserializeObject(raw)
+        Catch
+            Return New Dictionary(Of String, Object) From {{"message", raw}}
+        End Try
+    End Function
+
+    Private Function Dict(value As Object) As Dictionary(Of String, Object)
+        Dim d = TryCast(value, Dictionary(Of String, Object))
+        If d IsNot Nothing Then Return d
+        Return New Dictionary(Of String, Object)()
+    End Function
+
+    Private Function ListValue(value As Object) As List(Of Object)
+        If value Is Nothing Then Return New List(Of Object)()
+        Dim arr = TryCast(value, Object())
+        If arr IsNot Nothing Then Return arr.ToList()
+        Dim list = TryCast(value, ArrayList)
+        If list IsNot Nothing Then Return list.Cast(Of Object)().ToList()
+        Dim generic = TryCast(value, IEnumerable(Of Object))
+        If generic IsNot Nothing Then Return generic.ToList()
+        Return New List(Of Object)()
+    End Function
+
+    Private Function GetValue(dict As Dictionary(Of String, Object), key As String) As Object
+        Dim value As Object = Nothing
+        If dict.TryGetValue(key, value) Then Return value
+        Return Nothing
+    End Function
+
+    Private Function StringValue(value As Object) As String
+        If TypeOf value Is String Then Return CStr(value)
+        Return ""
+    End Function
+
+    Private Function Json(value As Object) As String
+        If value Is Nothing Then Return ""
+        Try
+            Return Serializer.Serialize(value)
+        Catch
+            Return Convert.ToString(value, CultureInfo.InvariantCulture)
+        End Try
+    End Function
+
+    Private Function PrettyJson(value As Object, Optional indent As Integer = 0) As String
+        Dim sb As New StringBuilder()
+        WritePrettyJson(sb, value, indent)
+        Return sb.ToString()
+    End Function
+
+    Private Sub WritePrettyJson(sb As StringBuilder, value As Object, indent As Integer)
+        If value Is Nothing Then sb.Append("null") : Return
+        Dim d = TryCast(value, Dictionary(Of String, Object))
+        If d IsNot Nothing Then
+            sb.AppendLine("{")
+            Dim index = 0
+            For Each pair In d
+                sb.Append(New String(" "c, indent + 2)).Append(Serializer.Serialize(pair.Key)).Append(": ")
+                WritePrettyJson(sb, pair.Value, indent + 2)
+                index += 1
+                If index < d.Count Then sb.Append(",")
+                sb.AppendLine()
+            Next
+            sb.Append(New String(" "c, indent)).Append("}")
+            Return
+        End If
+        Dim list = ListValue(value)
+        If (TypeOf value Is Object() OrElse TypeOf value Is ArrayList OrElse TypeOf value Is IEnumerable(Of Object)) Then
+            sb.AppendLine("[")
+            For i As Integer = 0 To list.Count - 1
+                sb.Append(New String(" "c, indent + 2))
+                WritePrettyJson(sb, list(i), indent + 2)
+                If i < list.Count - 1 Then sb.Append(",")
+                sb.AppendLine()
+            Next
+            sb.Append(New String(" "c, indent)).Append("]")
+            Return
+        End If
+        sb.Append(Serializer.Serialize(value))
+    End Sub
+
+    Private Function LocalFailure(ex As AppException) As ApiResult
+        Return New ApiResult With {
+            .Ok = False, .Status = ex.Status, .StatusText = "Local validation error", .ErrorMessage = ex.Message,
+            .Problem = New ApiProblem With {.Code = ex.Code, .Message = ex.Message, .Details = ex.Details, .Action = "Correct the request values and run the operation again.", .Retryable = False}
+        }
+    End Function
+
+    Private Sub ShowResult(operation As String, result As ApiResult)
+        LastResult = result
+        lblMeta.Text = result.Status.ToString(CultureInfo.InvariantCulture) & " " & result.StatusText & If(result.DurationMs > 0, "  |  " & result.DurationMs.ToString(CultureInfo.InvariantCulture) & " ms", "") & If(result.RequestId <> "", "  |  Request " & result.RequestId, "") & If(result.RateLimit <> "", "  |  " & result.RateLimit & " req/s", "")
+        Dim envelope As New Dictionary(Of String, Object) From {
+            {"ok", result.Ok}, {"status", result.Status}, {"statusText", result.StatusText}, {"requestId", If(result.RequestId = "", Nothing, result.RequestId)},
+            {"gatewayId", If(result.GatewayId = "", Nothing, result.GatewayId)}, {"traceId", If(result.TraceId = "", Nothing, result.TraceId)},
+            {"rateLimit", If(result.RateLimit = "", Nothing, result.RateLimit)}, {"durationMs", result.DurationMs}, {"attempts", result.Attempts}, {"data", result.Data}
+        }
+        If result.Problem IsNot Nothing Then envelope("problem") = New Dictionary(Of String, Object) From {{"code", result.Problem.Code}, {"message", result.Problem.Message}, {"details", result.Problem.Details}, {"action", result.Problem.Action}, {"retryable", result.Problem.Retryable}}
+        txtRaw.Text = PrettyJson(envelope)
+        txtResult.Text = BuildSummary(operation, result)
+        LastDocumentUrl = FindDocumentUrl(result.Data)
+        btnOpenDocument.Visible = LastDocumentUrl <> ""
+        tabs.SelectedIndex = 0
+    End Sub
+
+    Private Function BuildSummary(operation As String, result As ApiResult) As String
+        Dim sb As New StringBuilder()
+        If Not result.Ok Then
+            sb.AppendLine("REQUEST FAILED")
+            If result.Problem IsNot Nothing Then
+                sb.AppendLine("Code: " & result.Problem.Code)
+                sb.AppendLine("Message: " & result.Problem.Message)
+                If result.Problem.Details <> "" Then sb.AppendLine("Details: " & result.Problem.Details)
+                If result.Problem.Action <> "" Then sb.AppendLine("What to do: " & result.Problem.Action)
+                sb.AppendLine("Automatic retry: " & If(result.Problem.Retryable, "Safe with backoff", "Not recommended until the cause/state is verified"))
+            Else
+                sb.AppendLine(result.ErrorMessage)
+            End If
+            If result.RequestId <> "" Then sb.AppendLine("Amazon request ID: " & result.RequestId)
+            Return sb.ToString()
+        End If
+
+        sb.AppendLine("SUCCESS")
+        Dim data = Dict(result.Data)
+        Select Case operation
