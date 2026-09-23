@@ -244,6 +244,10 @@ Public Class MainForm
     End Sub
 
     Public Sub RunCiSelfTest()
+        If CurrentOperation <> "catalog" Then Throw New InvalidOperationException("Catalogue must be the initial active workflow.")
+        If operationTree.SelectedNode Is Nothing OrElse operationTree.SelectedNode.Tag Is Nothing OrElse CStr(operationTree.SelectedNode.Tag) <> "catalog" Then
+            Throw New InvalidOperationException("Catalogue must be visibly selected on startup.")
+        End If
         If Marketplaces.Count <> 23 Then Throw New InvalidOperationException("Marketplace list must contain 23 entries.")
         If Marketplaces.Select(Function(m) m.Id).Distinct(StringComparer.Ordinal).Count() <> Marketplaces.Count Then Throw New InvalidOperationException("Marketplace IDs must be unique.")
         If Operations.Select(Function(op) op.Id).Distinct(StringComparer.Ordinal).Count() <> Operations.Count Then Throw New InvalidOperationException("Operation IDs must be unique.")
