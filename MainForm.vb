@@ -1625,8 +1625,9 @@ Public Class MainForm
                     ms.Write(buffer, 0, count)
                     total += count
                     If total >= maxBytes Then
-                        Dim extra = input.ReadByte()
-                        truncated = extra >= 0
+                        Dim extra(0) As Byte
+                        Dim extraCount = Await input.ReadAsync(extra, 0, 1, cancellationToken)
+                        truncated = extraCount > 0
                         Exit Do
                     End If
                 Loop
@@ -1745,22 +1746,47 @@ Public Class MainForm
     Private Async Function SendWithRetryAsync(factory As Func(Of HttpRequestMessage), mode As RetryMode) As Task(Of Tuple(Of HttpResponseMessage, Integer))
         Const maxAttempts As Integer = 4
         For attempt As Integer = 1 To maxAttempts
+            Dim response As HttpResponseMessage = Nothing
+            Dim networkFailure As Exception = Nothing
+            Dim timedOut As Boolean = False
+
             Try
-                Dim response = Await Http.SendAsync(factory())
-                If Not ShouldRetry(CInt(response.StatusCode), mode) OrElse attempt = maxAttempts Then Return Tuple.Create(response, attempt)
-                Dim delay = RetryDelay(response, attempt)
-                response.Dispose()
-                Await Task.Delay(delay)
+                Using request = factory()
+                    response = Await Http.SendAsync(request)
+                End Using
             Catch ex As TaskCanceledException
-                If mode <> RetryMode.WriteRequest AndAlso attempt < maxAttempts Then System.Threading.Thread.Sleep(ClampDelay(750 * CInt(Math.Pow(2, attempt - 1)))) : Continue For
-                If mode = RetryMode.WriteRequest Then Throw New AppException("The connection failed while sending an Amazon write request. Amazon may have received it even though no response reached the app.", 502, "AMBIGUOUS_WRITE_RESULT", ex.Message)
-                Throw New AppException("The request to Amazon timed out.", 502, "AMAZON_TIMEOUT", ex.Message)
+                networkFailure = ex
+                timedOut = True
             Catch ex As HttpRequestException
-                If mode <> RetryMode.WriteRequest AndAlso attempt < maxAttempts Then System.Threading.Thread.Sleep(ClampDelay(750 * CInt(Math.Pow(2, attempt - 1)))) : Continue For
-                If mode = RetryMode.WriteRequest Then Throw New AppException("The connection failed while sending an Amazon write request. Verify Amazon state before resubmitting.", 502, "AMBIGUOUS_WRITE_RESULT", ex.Message)
-                Throw New AppException("The app could not reach Amazon.", 502, "AMAZON_NETWORK_ERROR", ex.Message)
+                networkFailure = ex
             End Try
+
+            If networkFailure IsNot Nothing Then
+                If mode <> RetryMode.WriteRequest AndAlso attempt < maxAttempts Then
+                    Await Task.Delay(ClampDelay(750 * CInt(Math.Pow(2, attempt - 1))))
+                    Continue For
+                End If
+
+                If mode = RetryMode.WriteRequest Then
+                    Throw New AppException(
+                        "The connection failed while sending an Amazon write request. Amazon may have received it even though no response reached the app.",
+                        502,
+                        "AMBIGUOUS_WRITE_RESULT",
+                        networkFailure.Message)
+                End If
+
+                If timedOut Then Throw New AppException("The request to Amazon timed out.", 502, "AMAZON_TIMEOUT", networkFailure.Message)
+                Throw New AppException("The app could not reach Amazon.", 502, "AMAZON_NETWORK_ERROR", networkFailure.Message)
+            End If
+
+            If response Is Nothing Then Continue For
+            If Not ShouldRetry(CInt(response.StatusCode), mode) OrElse attempt = maxAttempts Then Return Tuple.Create(response, attempt)
+
+            Dim delay = RetryDelay(response, attempt)
+            response.Dispose()
+            Await Task.Delay(delay)
         Next
+
         Throw New AppException("Amazon request did not produce a response", 502, "NO_RESPONSE")
     End Function
 
