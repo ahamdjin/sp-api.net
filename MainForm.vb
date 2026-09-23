@@ -17,6 +17,7 @@ Imports System.Net.Http
 Imports System.Net.Http.Headers
 Imports System.Text
 Imports System.Text.RegularExpressions
+Imports System.Threading
 Imports System.Threading.Tasks
 Imports System.Web
 Imports System.Web.Script.Serialization
@@ -1524,18 +1525,22 @@ Public Class MainForm
         ValidateAmazonDocumentUrl(url, label)
         Dim downloaded As New Dictionary(Of String, Object) From {{"contentType", Nothing}, {"bytesRead", 0}, {"truncated", False}, {"content", ""}, {"error", Nothing}}
         Try
-            Using response = Await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead)
-                If Not response.IsSuccessStatusCode Then
-                    downloaded("error") = "Preview failed with HTTP " & CInt(response.StatusCode).ToString() & " " & response.ReasonPhrase & ". The original URL is still available."
-                Else
-                    downloaded("contentType") = If(response.Content.Headers.ContentType Is Nothing, Nothing, response.Content.Headers.ContentType.ToString())
-                    downloaded("contentDisposition") = If(response.Content.Headers.ContentDisposition Is Nothing, Nothing, response.Content.Headers.ContentDisposition.ToString())
-                    Dim preview = Await ReadPreviewAsync(response, PreviewLimit)
-                    downloaded("bytesRead") = preview.Item2
-                    downloaded("truncated") = preview.Item3
-                    downloaded("content") = preview.Item1
-                End If
+            Using timeout As New CancellationTokenSource(TimeSpan.FromSeconds(30))
+                Using response = Await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, timeout.Token)
+                    If Not response.IsSuccessStatusCode Then
+                        downloaded("error") = "Preview failed with HTTP " & CInt(response.StatusCode).ToString() & " " & response.ReasonPhrase & ". The original URL is still available."
+                    Else
+                        downloaded("contentType") = If(response.Content.Headers.ContentType Is Nothing, Nothing, response.Content.Headers.ContentType.ToString())
+                        downloaded("contentDisposition") = If(response.Content.Headers.ContentDisposition Is Nothing, Nothing, response.Content.Headers.ContentDisposition.ToString())
+                        Dim preview = Await ReadPreviewAsync(response, PreviewLimit, timeout.Token)
+                        downloaded("bytesRead") = preview.Item2
+                        downloaded("truncated") = preview.Item3
+                        downloaded("content") = preview.Item1
+                    End If
+                End Using
             End Using
+        Catch ex As OperationCanceledException
+            downloaded("error") = "Preview timed out after 30 seconds. The original URL is still available."
         Catch ex As Exception
             downloaded("error") = "Preview failed: " & ex.Message & ". The original URL is still available."
         End Try
@@ -1544,7 +1549,7 @@ Public Class MainForm
         Return metadata
     End Function
 
-    Private Async Function ReadPreviewAsync(response As HttpResponseMessage, maxBytes As Integer) As Task(Of Tuple(Of String, Integer, Boolean))
+    Private Async Function ReadPreviewAsync(response As HttpResponseMessage, maxBytes As Integer, cancellationToken As CancellationToken) As Task(Of Tuple(Of String, Integer, Boolean))
         Using input = Await response.Content.ReadAsStreamAsync()
             Using ms As New MemoryStream()
                 Dim buffer(8191) As Byte
@@ -1553,7 +1558,7 @@ Public Class MainForm
                 Do
                     Dim remaining = maxBytes - total
                     If remaining <= 0 Then truncated = True : Exit Do
-                    Dim count = Await input.ReadAsync(buffer, 0, Math.Min(buffer.Length, remaining))
+                    Dim count = Await input.ReadAsync(buffer, 0, Math.Min(buffer.Length, remaining), cancellationToken)
                     If count = 0 Then Exit Do
                     ms.Write(buffer, 0, count)
                     total += count
