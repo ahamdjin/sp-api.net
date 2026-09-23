@@ -117,7 +117,9 @@ Public Class MainForm
     }
 
     Private Shared ReadOnly Http As New HttpClient(New HttpClientHandler With {
-        .AutomaticDecompression = DecompressionMethods.GZip Or DecompressionMethods.Deflate
+        .AutomaticDecompression = DecompressionMethods.GZip Or DecompressionMethods.Deflate,
+        .UseProxy = True,
+        .DefaultProxyCredentials = CredentialCache.DefaultCredentials
     }) With {.Timeout = TimeSpan.FromSeconds(30)}
 
     Private ReadOnly Marketplaces As New List(Of Marketplace) From {
@@ -197,6 +199,7 @@ Public Class MainForm
     Private CurrentOperation As String = "catalog"
     Private LastResult As ApiResult
     Private LastDocumentUrl As String = ""
+    Private ConnectionVerified As Boolean
 
     Private Const CoreOrderData As String = "PROCEEDS,EXPENSE,PROMOTION,CANCELLATION,FULFILLMENT,PACKAGES,TAX,PAYMENT,FULFILLMENT_ORDERS"
     Private Const DefaultCatalogData As String = "attributes,classifications,dimensions,identifiers,images,productTypes,relationships,salesRanks,summaries,vendorDetails"
@@ -297,8 +300,18 @@ Public Class MainForm
         lblConnection.ForeColor = Color.DimGray
         cGrid.Controls.Add(lblConnection, 5, 1)
 
-        AddHandler cboEnvironment.SelectedIndexChanged, Sub(sender, e) BuildOperationFields()
-        AddHandler cboMarketplace.SelectedIndexChanged, Sub(sender, e) BuildOperationFields()
+        AddHandler txtClientId.TextChanged, Sub(sender, e) InvalidateConnectionState()
+        AddHandler txtClientSecret.TextChanged, Sub(sender, e) InvalidateConnectionState()
+        AddHandler txtRefreshToken.TextChanged, Sub(sender, e) InvalidateConnectionState()
+        AddHandler cboEnvironment.SelectedIndexChanged, Sub(sender, e)
+                                                            InvalidateConnectionState()
+                                                            BuildOperationFields()
+                                                        End Sub
+        AddHandler cboMarketplace.SelectedIndexChanged, Sub(sender, e)
+                                                            InvalidateConnectionState()
+                                                            BuildOperationFields()
+                                                        End Sub
+        InvalidateConnectionState()
         root.Controls.Add(credentials, 0, 0)
 
         Dim mainSplit As New SplitContainer With {.Dock = DockStyle.Fill, .Orientation = Orientation.Vertical, .SplitterDistance = 245, .FixedPanel = FixedPanel.Panel1}
@@ -413,13 +426,15 @@ Public Class MainForm
     Private Sub SelectOperation(id As String)
         CurrentOperation = id
         FieldValues("confirmed") = False
-        lblOperation.Text = Operations.First(Function(x) x.Id = id).Label
+        Dim operation = Operations.First(Function(x) x.Id = id)
+        lblOperation.Text = operation.Label
+        btnRun.Text = If(operation.Kind = "legacy", "Legacy utility unavailable", "Run " & operation.Label)
         BuildOperationFields()
-        txtResult.Clear()
-        txtRaw.Clear()
+        txtResult.Text = If(operation.Kind = "legacy", "This legacy SQL utility is not part of the portable SP-API connection.", "Run the selected request to see a readable result here.")
+        txtRaw.Text = If(operation.Kind = "legacy", "", "The complete Amazon response will appear here.")
         lblMeta.Text = ""
         btnOpenDocument.Visible = False
-        btnRun.Enabled = Operations.First(Function(x) x.Id = id).Kind <> "legacy"
+        btnRun.Enabled = operation.Kind <> "legacy"
     End Sub
 
     Private Sub BuildOperationFields()
@@ -429,8 +444,27 @@ Public Class MainForm
         requestPanel.Controls.Clear()
         FieldControls.Clear()
         Dim guide = If(IsSandbox(), SandboxGuide(CurrentOperation), "")
-        lblSandbox.Visible = guide <> ""
-        lblSandbox.Text = guide
+        Dim operationKind = Operations.First(Function(x) x.Id = CurrentOperation).Kind
+        If operationKind = "legacy" Then
+            lblSandbox.Visible = False
+        Else
+            lblSandbox.Visible = True
+            If IsSandbox() Then
+                lblSandbox.Text = "SANDBOX - Amazon test endpoint. Nothing is changed in Production."
+                lblSandbox.BackColor = Color.FromArgb(255, 248, 220)
+                lblSandbox.ForeColor = Color.FromArgb(90, 70, 0)
+            Else
+                lblSandbox.Text = "PRODUCTION - Live seller account. Read requests use live data; confirmed write requests can change Amazon data."
+                lblSandbox.BackColor = Color.FromArgb(255, 238, 238)
+                lblSandbox.ForeColor = Color.FromArgb(120, 35, 35)
+            End If
+        End If
+
+        AddNote(OperationHelp(CurrentOperation))
+        If IsSandbox() AndAlso guide <> "" Then
+            AddNote(guide)
+            If CurrentOperation <> "inventory" Then AddSandboxExampleButton()
+        End If
 
         Select Case CurrentOperation
             Case "catalog"
@@ -613,6 +647,17 @@ Public Class MainForm
         FieldControls(key) = combo
     End Sub
 
+    Private Sub AddSandboxExampleButton()
+        Dim button As New Button With {
+            .Text = "Load Sandbox example into the form",
+            .AutoSize = True,
+            .Padding = New Padding(8, 3, 8, 3),
+            .Margin = New Padding(3, 2, 3, 8)
+        }
+        AddHandler button.Click, Sub(sender, e) LoadSandboxExample()
+        requestPanel.Controls.Add(button)
+    End Sub
+
     Private Sub AddNote(message As String)
         Dim note As New Label With {
             .Text = message,
@@ -678,6 +723,199 @@ Public Class MainForm
         Return prefix & SelectedMarketplace().Region & ".amazon.com"
     End Function
 
+    Private Function OperationHelp(operation As String) As String
+        Select Case operation
+            Case "catalog" : Return "Find a catalogue item by ASIN/SKU/other identifier, or search by keywords. Related ASIN fetching is optional."
+            Case "fees" : Return "Estimate Amazon selling fees for one ASIN or seller SKU at the price and fulfilment method you enter."
+            Case "inventory" : Return "Read FBA inventory summaries. Seller SKUs and changed-since are optional filters."
+            Case "orders" : Return "Search Orders API 2026 by creation date. Buyer/recipient data is opt-in because it can contain PII."
+            Case "order" : Return "Retrieve one Amazon order by order ID."
+            Case "reports" : Return "List report jobs. A next-page token is used by itself, exactly as Amazon requires."
+            Case "createReport" : Return "Create a report job. Amazon first returns a report ID; use Report status until the job is DONE."
+            Case "report" : Return "Check a report job. When DONE, the returned report document ID is saved for the Report document screen."
+            Case "reportDocument" : Return "Get report-document metadata and a bounded text preview when Amazon returns a readable document URL."
+            Case "feeds" : Return "List feed jobs and processing states."
+            Case "feed" : Return "Check one feed. When DONE, the result feed document ID is saved for the Feed processing report screen."
+            Case "feedDocument" : Return "Get the feed processing report and a bounded text preview when available."
+            Case "submitFeed" : Return "Create the upload document, upload the feed in Production, then create the Amazon feed job."
+            Case "inboundPlans" : Return "List Fulfillment Inbound plans with optional status, sort, page size, and pagination token."
+            Case "inboundPlan" : Return "Retrieve one inbound plan by ID."
+            Case "inboundShipment" : Return "Retrieve one shipment belonging to an inbound plan."
+            Case "inboundOperationStatus" : Return "Check an asynchronous inbound operation and review Amazon operation problems/warnings."
+            Case "prepDetails" : Return "Get prep requirements for up to 100 merchant SKUs."
+            Case "createInboundPlan" : Return "Create an inbound plan using the destination marketplace, ship-from address, and item rows shown below."
+            Case "itemLabels" : Return "Request FBA item labels for the entered MSKUs and quantities."
+            Case "shipmentLabels" : Return "Request shipment/carton/pallet labels for an existing FBA shipment."
+            Case "billOfLading" : Return "Request the bill of lading document for an existing FBA shipment."
+            Case "legacyConvert", "legacyFc" : Return "Legacy company-specific SQL utility. It is intentionally disconnected because the private database/schema was not supplied."
+        End Select
+        Return ""
+    End Function
+
+    Private Sub InvalidateConnectionState()
+        ConnectionVerified = False
+        lblConnection.Text = "Not tested"
+        lblConnection.ForeColor = Color.DimGray
+        If cboEnvironment.SelectedIndex >= 0 Then btnTest.Text = "Test " & EnvironmentName() & " connection"
+    End Sub
+
+    Private Sub SelectMarketplaceById(id As String)
+        For i As Integer = 0 To cboMarketplace.Items.Count - 1
+            Dim marketplace = TryCast(cboMarketplace.Items(i), Marketplace)
+            If marketplace IsNot Nothing AndAlso marketplace.Id = id Then
+                cboMarketplace.SelectedIndex = i
+                Exit For
+            End If
+        Next
+    End Sub
+
+    Private Sub LoadSandboxExample()
+        If Not IsSandbox() Then Return
+        FieldValues("confirmed") = False
+
+        Select Case CurrentOperation
+            Case "catalog"
+                SelectMarketplaceById("ATVPDKIKX0DER")
+                FieldValues("includedData") = "classifications,dimensions,identifiers,images,productTypes,relationships,salesRanks,summaries,vendorDetails"
+                If S("catalogMode") = "keywords" Then
+                    FieldValues("query") = "samsung,tv"
+                    FieldValues("brandNames") = ""
+                    FieldValues("classificationIds") = ""
+                    FieldValues("catalogPageSize") = "20"
+                    FieldValues("pageToken") = ""
+                Else
+                    FieldValues("catalogMode") = "identifier"
+                    FieldValues("identifierType") = "ASIN"
+                    FieldValues("query") = "B07N4M94X4"
+                    FieldValues("includeVariations") = False
+                    FieldValues("sellerId") = ""
+                End If
+            Case "fees"
+                SelectMarketplaceById("ATVPDKIKX0DER")
+                FieldValues("feeIdType") = "ASIN"
+                FieldValues("feeIdentifier") = "B00V5DG6IQ"
+                FieldValues("price") = "10"
+                FieldValues("shipping") = "10"
+                FieldValues("isAmazonFulfilled") = False
+                FieldValues("requestIdentifier") = "UmaS1"
+                FieldValues("pointsNumber") = "0"
+                FieldValues("pointsAmount") = "0"
+            Case "orders"
+                SelectMarketplaceById("A1VC38T7YXB528")
+                FieldValues("createdAfter") = "2024-12-25T00:00:00Z"
+                FieldValues("createdBefore") = ""
+                FieldValues("statuses") = ""
+                FieldValues("fulfilledBy") = ""
+                FieldValues("pageSize") = ""
+                FieldValues("orderPaginationToken") = ""
+                FieldValues("orderIncludedData") = "BUYER,RECIPIENT,PROCEEDS,EXPENSE,PROMOTION,CANCELLATION,FULFILLMENT,PACKAGES"
+                FieldValues("includeOrderPii") = False
+            Case "order"
+                SelectMarketplaceById("A1VC38T7YXB528")
+                FieldValues("orderId") = "171-9876543-2109876"
+                FieldValues("orderIncludedData") = "BUYER,RECIPIENT,PROCEEDS,EXPENSE,PROMOTION,CANCELLATION,FULFILLMENT,PACKAGES"
+                FieldValues("includeOrderPii") = False
+            Case "reports"
+                SelectMarketplaceById("ATVPDKIKX0DER")
+                FieldValues("reportTypes") = "FEE_DISCOUNTS_REPORT,GET_AFN_INVENTORY_DATA"
+                FieldValues("processingStatuses") = "IN_QUEUE,IN_PROGRESS"
+                FieldValues("reportMarketplaceIds") = ""
+                FieldValues("createdSince") = ""
+                FieldValues("createdUntil") = ""
+                FieldValues("pageSize") = ""
+                FieldValues("reportNextToken") = ""
+            Case "createReport"
+                SelectMarketplaceById("ATVPDKIKX0DER")
+                FieldValues("reportType") = "GET_MERCHANT_LISTINGS_ALL_DATA"
+                FieldValues("dataStartTime") = "2024-03-10T20:11:24.000Z"
+                FieldValues("dataEndTime") = ""
+                FieldValues("reportMarketplaceIds") = "A1PA6795UKMFR9,ATVPDKIKX0DER"
+            Case "report"
+                SelectMarketplaceById("ATVPDKIKX0DER")
+                FieldValues("reportId") = "ID323"
+            Case "reportDocument"
+                SelectMarketplaceById("ATVPDKIKX0DER")
+                FieldValues("reportDocumentId") = "0356cf79-b8b0-4226-b4b9-0ee058ea5760"
+            Case "feeds"
+                SelectMarketplaceById("ATVPDKIKX0DER")
+                FieldValues("feedTypes") = "POST_PRODUCT_DATA"
+                FieldValues("processingStatuses") = "CANCELLED,DONE"
+                FieldValues("feedMarketplaceIds") = ""
+                FieldValues("createdSince") = ""
+                FieldValues("createdUntil") = ""
+                FieldValues("pageSize") = "10"
+                FieldValues("feedNextToken") = ""
+            Case "feed"
+                SelectMarketplaceById("ATVPDKIKX0DER")
+                FieldValues("feedId") = "feedId1"
+            Case "feedDocument"
+                SelectMarketplaceById("ATVPDKIKX0DER")
+                FieldValues("feedDocumentId") = "0356cf79-b8b0-4226-b4b9-0ee058ea5760"
+            Case "submitFeed"
+                SelectMarketplaceById("ATVPDKIKX0DER")
+                FieldValues("feedType") = "POST_PRODUCT_DATA"
+                FieldValues("contentType") = "text/tab-separated-values; charset=UTF-8"
+                FieldValues("feedMarketplaceIds") = "ATVPDKIKX0DER,A1F83G8C2ARO7P"
+                FieldValues("content") = "Sandbox test content"
+            Case "inboundPlans"
+                SelectMarketplaceById("ATVPDKIKX0DER")
+                FieldValues("status") = "ACTIVE"
+                FieldValues("sortBy") = "LAST_UPDATED_TIME"
+                FieldValues("sortOrder") = "ASC"
+                FieldValues("pageSize") = "2"
+                FieldValues("inboundPaginationToken") = "paginationToken"
+            Case "inboundPlan"
+                SelectMarketplaceById("ATVPDKIKX0DER")
+                FieldValues("inboundPlanId") = "wf1234abcd-1234-abcd-5678-1234abcd5678"
+            Case "inboundShipment"
+                SelectMarketplaceById("ATVPDKIKX0DER")
+                FieldValues("inboundPlanId") = "wf1234abcd-1234-abcd-5678-1234abcd5678"
+                FieldValues("shipmentId") = "sh1234abcd-1234-abcd-5678-1234abcd5678"
+            Case "inboundOperationStatus"
+                SelectMarketplaceById("ATVPDKIKX0DER")
+                FieldValues("operationId") = "1234abcd-1234-abcd-5678-1234abcd5678"
+            Case "prepDetails"
+                SelectMarketplaceById("ATVPDKIKX0DER")
+                FieldValues("mskus") = "msku1" & Environment.NewLine & "msku2"
+            Case "createInboundPlan"
+                SelectMarketplaceById("A2EUQ1WTGCTBG2")
+                FieldValues("destinationMarketplaces") = "A2EUQ1WTGCTBG2"
+                FieldValues("planName") = "FBA (03/20/2024, 12:01 PM)"
+                FieldValues("items") = "msku, 2, AMAZON, AMAZON, 2024-01-01, lotCode"
+                FieldValues("contactName") = "name"
+                FieldValues("companyName") = "Acme"
+                FieldValues("addressLine1") = "123 example street"
+                FieldValues("addressLine2") = "Unit 102"
+                FieldValues("city") = "Toronto"
+                FieldValues("districtOrCounty") = ""
+                FieldValues("stateOrProvinceCode") = "ON"
+                FieldValues("postalCode") = "M1M1M1"
+                FieldValues("countryCode") = "CA"
+                FieldValues("phoneNumber") = "1234567890"
+                FieldValues("email") = "email@email.com"
+            Case "itemLabels"
+                SelectMarketplaceById("ATVPDKIKX0DER")
+                FieldValues("items") = "msku1, 1" & Environment.NewLine & "msku2, 1"
+                FieldValues("labelType") = "STANDARD_FORMAT"
+                FieldValues("pageType") = "A4_21"
+            Case "shipmentLabels"
+                SelectMarketplaceById("ATVPDKIKX0DER")
+                FieldValues("shipmentId") = "348975493"
+                FieldValues("shipmentLabelType") = "BARCODE_2D"
+                FieldValues("shipmentPageType") = "PackageLabel_Letter_2"
+                FieldValues("numberOfPackages") = ""
+                FieldValues("numberOfPallets") = ""
+                FieldValues("packageLabelsToPrint") = ""
+                FieldValues("shipmentPageSize") = ""
+                FieldValues("pageStartIndex") = ""
+            Case "billOfLading"
+                SelectMarketplaceById("ATVPDKIKX0DER")
+                FieldValues("shipmentId") = "shipmentId"
+        End Select
+
+        BuildOperationFields()
+    End Sub
+
     Private Function SandboxGuide(operation As String) As String
         Select Case operation
             Case "catalog"
@@ -721,10 +959,12 @@ Public Class MainForm
             Dim token = Await GetAccessTokenAsync()
             Dim probe = Await CallSpApiAsync("/sellers/v1/marketplaceParticipations", HttpMethod.Get, Nothing, token.Item1)
             If Not probe.Ok Then Throw New AppException(If(probe.Problem IsNot Nothing, probe.Problem.Message, "Connection failed"), probe.Status, If(probe.Problem IsNot Nothing, probe.Problem.Code, "CONNECTION_FAILED"))
-            lblConnection.Text = "Connected - token valid about " & Math.Round(token.Item2 / 60.0R).ToString(CultureInfo.InvariantCulture) & " min"
+            ConnectionVerified = True
+            lblConnection.Text = "Connected to " & EnvironmentName() & " - " & SelectedMarketplace().Name
             lblConnection.ForeColor = Color.DarkGreen
         Catch ex As Exception
-            lblConnection.Text = ex.Message
+            ConnectionVerified = False
+            lblConnection.Text = "Connection failed - " & ex.Message
             lblConnection.ForeColor = Color.DarkRed
         Finally
             ToggleBusy(False, "")
