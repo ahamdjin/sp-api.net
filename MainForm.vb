@@ -144,6 +144,12 @@ Public Partial Class MainForm
     Private ReadOnly lblSandbox As New Label()
     Private ReadOnly btnRun As New Button()
     Private ReadOnly lblMeta As New Label()
+    Private ReadOnly lblViewTitle As New Label()
+    Private ReadOnly lblViewSubtitle As New Label()
+    Private ReadOnly lblViewDetails As New Label()
+    Private ReadOnly viewGrid As New DataGridView()
+    Private ReadOnly viewDetails As New DataGridView()
+    Private ReadOnly viewSplit As New SplitContainer()
     Private ReadOnly txtResult As New TextBox()
     Private ReadOnly txtRaw As New TextBox()
     Private ReadOnly btnOpenDocument As New Button()
@@ -162,6 +168,7 @@ Public Partial Class MainForm
     Private NextFieldKey As String = ""
     Private NextFieldValue As String = ""
     Private ConnectionVerified As Boolean
+    Private RenderingView As Boolean
 
 
     Public Sub New()
@@ -494,11 +501,15 @@ Public Partial Class MainForm
         requestHost.Controls.Add(btnRun)
 
         tabs.Dock = DockStyle.Fill
-        Dim resultTab As New TabPage("Result")
+        Dim viewTab As New TabPage("View")
+        Dim resultTab As New TabPage("Summary")
         Dim rawTab As New TabPage("Raw response")
+        tabs.TabPages.Add(viewTab)
         tabs.TabPages.Add(resultTab)
         tabs.TabPages.Add(rawTab)
         rightSplit.Panel2.Controls.Add(tabs)
+
+        BuildResultView(viewTab)
 
         Dim resultLayout As New TableLayoutPanel With {
             .Dock = DockStyle.Fill,
@@ -603,6 +614,95 @@ Public Partial Class MainForm
         rawLayout.Controls.Add(btnCopyRaw, 0, 1)
     End Sub
 
+    Private Sub BuildResultView(viewTab As TabPage)
+        Dim layout As New TableLayoutPanel With {
+            .Dock = DockStyle.Fill,
+            .ColumnCount = 1,
+            .RowCount = 3,
+            .Padding = New Padding(8)
+        }
+        layout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        layout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        layout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        layout.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+        viewTab.Controls.Add(layout)
+
+        lblViewTitle.AutoSize = True
+        lblViewTitle.Font = New Font(Font.FontFamily, 14.0F, FontStyle.Bold)
+        lblViewTitle.Text = "No result yet"
+        lblViewTitle.Margin = New Padding(3, 2, 3, 2)
+        layout.Controls.Add(lblViewTitle, 0, 0)
+
+        lblViewSubtitle.AutoSize = True
+        lblViewSubtitle.ForeColor = Color.DimGray
+        lblViewSubtitle.MaximumSize = New Size(1000, 0)
+        lblViewSubtitle.Text = "Run an operation to see a readable view here."
+        lblViewSubtitle.Margin = New Padding(3, 0, 3, 8)
+        layout.Controls.Add(lblViewSubtitle, 0, 1)
+
+        viewSplit.Dock = DockStyle.Fill
+        viewSplit.Orientation = Orientation.Horizontal
+        viewSplit.SplitterDistance = 210
+        viewSplit.Panel1MinSize = 80
+        viewSplit.Panel2MinSize = 80
+        layout.Controls.Add(viewSplit, 0, 2)
+
+        viewGrid.Dock = DockStyle.Fill
+        viewGrid.ReadOnly = True
+        viewGrid.AllowUserToAddRows = False
+        viewGrid.AllowUserToDeleteRows = False
+        viewGrid.AllowUserToResizeRows = False
+        viewGrid.MultiSelect = False
+        viewGrid.SelectionMode = DataGridViewSelectionMode.FullRowSelect
+        viewGrid.RowHeadersVisible = False
+        viewGrid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
+        viewGrid.BackgroundColor = SystemColors.Window
+        viewGrid.BorderStyle = BorderStyle.FixedSingle
+        viewGrid.AutoGenerateColumns = False
+        AddHandler viewGrid.SelectionChanged, AddressOf ViewGridSelectionChanged
+        AddHandler viewGrid.CellDoubleClick, AddressOf ViewGridDoubleClick
+        viewSplit.Panel1.Controls.Add(viewGrid)
+
+        Dim detailLayout As New TableLayoutPanel With {
+            .Dock = DockStyle.Fill,
+            .ColumnCount = 1,
+            .RowCount = 2
+        }
+        detailLayout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        detailLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+        viewSplit.Panel2.Controls.Add(detailLayout)
+
+        lblViewDetails.AutoSize = True
+        lblViewDetails.Font = New Font(Font, FontStyle.Bold)
+        lblViewDetails.Text = "Details"
+        lblViewDetails.Margin = New Padding(3, 4, 3, 4)
+        detailLayout.Controls.Add(lblViewDetails, 0, 0)
+
+        viewDetails.Dock = DockStyle.Fill
+        viewDetails.ReadOnly = True
+        viewDetails.AllowUserToAddRows = False
+        viewDetails.AllowUserToDeleteRows = False
+        viewDetails.AllowUserToResizeRows = False
+        viewDetails.MultiSelect = False
+        viewDetails.SelectionMode = DataGridViewSelectionMode.FullRowSelect
+        viewDetails.RowHeadersVisible = False
+        viewDetails.AutoGenerateColumns = False
+        viewDetails.BackgroundColor = SystemColors.Window
+        viewDetails.BorderStyle = BorderStyle.FixedSingle
+        viewDetails.Columns.Add(New DataGridViewTextBoxColumn With {
+            .Name = "Field",
+            .HeaderText = "Field",
+            .Width = 235,
+            .AutoSizeMode = DataGridViewAutoSizeColumnMode.None
+        })
+        viewDetails.Columns.Add(New DataGridViewTextBoxColumn With {
+            .Name = "Value",
+            .HeaderText = "Value",
+            .AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill
+        })
+        detailLayout.Controls.Add(viewDetails, 0, 1)
+    End Sub
+
     Private Sub AddCredential(grid As TableLayoutPanel, col As Integer, row As Integer, labelText As String, control As Control, secret As Boolean)
         Dim label As New Label With {.Text = labelText, .AutoSize = True, .Anchor = AnchorStyles.Left, .Margin = New Padding(3, 8, 3, 3)}
         control.Dock = DockStyle.Fill
@@ -649,6 +749,7 @@ Public Partial Class MainForm
         BuildOperationFields()
         txtResult.Text = If(operation.Kind = "legacy", "This legacy SQL utility is not part of the portable SP-API connection.", "Run the selected request to see a readable result here.")
         txtRaw.Text = If(operation.Kind = "legacy", "", "The complete Amazon response will appear here.")
+        ClearResultView(If(operation.Kind = "legacy", "Legacy utility", operation.Label), If(operation.Kind = "legacy", "This private SQL utility is intentionally disconnected.", "Run the request to see the returned data here."))
         lblMeta.Text = ""
         btnOpenDocument.Visible = False
         cboDocuments.Visible = False
@@ -1404,6 +1505,7 @@ Public Partial Class MainForm
         If result.Problem IsNot Nothing Then envelope("problem") = New Dictionary(Of String, Object) From {{"code", result.Problem.Code}, {"message", result.Problem.Message}, {"details", result.Problem.Details}, {"action", result.Problem.Action}, {"retryable", result.Problem.Retryable}}
         txtRaw.Text = PrettyJson(envelope)
         txtResult.Text = BuildSummary(operation, result)
+        RenderResultView(operation, result)
         DocumentUrls.Clear()
         DocumentUrls.AddRange(FindDocumentUrls(result.Data))
         LastDocumentUrl = If(DocumentUrls.Count > 0, DocumentUrls(0).Value, "")
