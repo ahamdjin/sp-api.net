@@ -12,6 +12,7 @@ Imports System.IO
 Imports System.Linq
 Imports System.Net
 Imports System.Text
+Imports System.Text.RegularExpressions
 Imports System.Threading.Tasks
 Imports System.Windows.Forms
 
@@ -325,6 +326,65 @@ Public Partial Class MainForm
             invalidContentTypeRejected = (ex.Code = "INVALID_CONTENT_TYPE")
         End Try
         If Not invalidContentTypeRejected Then Throw New InvalidOperationException("Invalid feed Content-Type must be rejected before an Amazon write.")
+
+        Dim catalogViewResult As New ApiResult With {
+            .Ok = True,
+            .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"items", New Object() {
+                    New Dictionary(Of String, Object) From {
+                        {"asin", "B000TEST01"},
+                        {"summaries", New Object() {
+                            New Dictionary(Of String, Object) From {
+                                {"itemName", "Test Product"},
+                                {"brand", "Test Brand"},
+                                {"marketplaceId", "ATVPDKIKX0DER"}
+                            }
+                        }},
+                        {"productTypes", New Object() {
+                            New Dictionary(Of String, Object) From {{"productType", "TEST_PRODUCT"}}
+                        }}
+                    }
+                }}
+            }
+        }
+        RenderResultView("catalog", catalogViewResult)
+        If viewGrid.Rows.Count <> 1 Then Throw New InvalidOperationException("Catalog View did not render the returned product.")
+        If viewGrid.Columns.Count < 4 Then Throw New InvalidOperationException("Catalog View is missing product columns.")
+        If Convert.ToString(viewGrid.Rows(0).Cells(1).Value, CultureInfo.InvariantCulture) <> "Test Product" Then Throw New InvalidOperationException("Catalog View did not show the product title.")
+        If viewDetails.Rows.Count = 0 Then Throw New InvalidOperationException("Catalog View did not render selected product details.")
+
+        Dim ordersViewResult As New ApiResult With {
+            .Ok = True,
+            .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"orders", New Object() {
+                    New Dictionary(Of String, Object) From {
+                        {"orderId", "ORDER-VIEW-1"},
+                        {"orderStatus", "SHIPPED"},
+                        {"purchaseDate", "2026-09-24T10:00:00Z"}
+                    },
+                    New Dictionary(Of String, Object) From {
+                        {"orderId", "ORDER-VIEW-2"},
+                        {"orderStatus", "UNSHIPPED"}
+                    }
+                }}
+            }
+        }
+        RenderResultView("orders", ordersViewResult)
+        If viewGrid.Rows.Count <> 2 Then Throw New InvalidOperationException("Orders View did not render every returned order.")
+        If Convert.ToString(viewGrid.Rows(0).Cells(0).Value, CultureInfo.InvariantCulture) <> "ORDER-VIEW-1" Then Throw New InvalidOperationException("Orders View did not show the order ID.")
+
+        Dim viewFailure As New ApiResult With {
+            .Ok = False,
+            .Status = 403,
+            .StatusText = "Forbidden",
+            .RequestId = "request-view-test",
+            .Problem = New ApiProblem With {.Code = "Unauthorized", .Message = "Test failure", .Action = "Check permissions."}
+        }
+        RenderResultView("orders", viewFailure)
+        If Not viewSplit.Panel1Collapsed Then Throw New InvalidOperationException("Failure View should show readable details without an empty record table.")
+        If viewDetails.Rows.Count = 0 Then Throw New InvalidOperationException("Failure View did not show error details.")
 
         CachedAccessToken = "test-token"
         CachedAccessTokenExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(10)
