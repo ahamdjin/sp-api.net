@@ -613,36 +613,6 @@ Public Partial Class MainForm
         AddHandler btnCopyResult.Click, Sub(sender, e) CopyTextToClipboard(txtResult.Text, "Result")
         resultActions.Controls.Add(btnCopyResult)
 
-        cboReturnedRecords.DropDownStyle = ComboBoxStyle.DropDownList
-        cboReturnedRecords.Width = 285
-        cboReturnedRecords.Visible = False
-        resultActions.Controls.Add(cboReturnedRecords)
-
-        btnOpenReturnedRecord.Text = "Open selected"
-        btnOpenReturnedRecord.AutoSize = True
-        btnOpenReturnedRecord.Padding = New Padding(8, 2, 8, 2)
-        btnOpenReturnedRecord.Visible = False
-        AddHandler btnOpenReturnedRecord.Click, AddressOf OpenReturnedRecord
-        resultActions.Controls.Add(btnOpenReturnedRecord)
-
-        btnNextStep.Text = "Next step"
-        btnNextStep.AutoSize = True
-        btnNextStep.Padding = New Padding(8, 2, 8, 2)
-        btnNextStep.Visible = False
-        AddHandler btnNextStep.Click, AddressOf OpenNextStep
-        resultActions.Controls.Add(btnNextStep)
-
-        cboDocuments.DropDownStyle = ComboBoxStyle.DropDownList
-        cboDocuments.Width = 190
-        cboDocuments.Visible = False
-        resultActions.Controls.Add(cboDocuments)
-
-        btnOpenDocument.Text = "Open / download document"
-        btnOpenDocument.AutoSize = True
-        btnOpenDocument.Padding = New Padding(8, 2, 8, 2)
-        btnOpenDocument.Visible = False
-        AddHandler btnOpenDocument.Click, AddressOf OpenDocument
-        resultActions.Controls.Add(btnOpenDocument)
         resultLayout.Controls.Add(resultActions, 0, 2)
 
         Dim rawLayout As New TableLayoutPanel With {
@@ -678,13 +648,14 @@ Public Partial Class MainForm
         Dim layout As New TableLayoutPanel With {
             .Dock = DockStyle.Fill,
             .ColumnCount = 1,
-            .RowCount = 3,
+            .RowCount = 4,
             .Padding = New Padding(8)
         }
         layout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
         layout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
         layout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
         layout.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+        layout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
         viewTab.Controls.Add(layout)
 
         lblViewTitle.AutoSize = True
@@ -761,6 +732,51 @@ Public Partial Class MainForm
             .AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill
         })
         detailLayout.Controls.Add(viewDetails, 0, 1)
+
+        viewDetails.DefaultCellStyle.WrapMode = DataGridViewTriState.True
+        viewDetails.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.AllCellsExceptHeaders
+
+        Dim viewActions As New FlowLayoutPanel With {
+            .Dock = DockStyle.Fill,
+            .AutoSize = True,
+            .AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            .FlowDirection = FlowDirection.LeftToRight,
+            .WrapContents = True,
+            .Padding = New Padding(0, 6, 0, 0)
+        }
+
+        cboReturnedRecords.DropDownStyle = ComboBoxStyle.DropDownList
+        cboReturnedRecords.Width = 300
+        cboReturnedRecords.Visible = False
+        viewActions.Controls.Add(cboReturnedRecords)
+
+        btnOpenReturnedRecord.Text = "Open selected"
+        btnOpenReturnedRecord.AutoSize = True
+        btnOpenReturnedRecord.Padding = New Padding(8, 2, 8, 2)
+        btnOpenReturnedRecord.Visible = False
+        AddHandler btnOpenReturnedRecord.Click, AddressOf OpenReturnedRecord
+        viewActions.Controls.Add(btnOpenReturnedRecord)
+
+        btnNextStep.Text = "Next step"
+        btnNextStep.AutoSize = True
+        btnNextStep.Padding = New Padding(8, 2, 8, 2)
+        btnNextStep.Visible = False
+        AddHandler btnNextStep.Click, AddressOf OpenNextStep
+        viewActions.Controls.Add(btnNextStep)
+
+        cboDocuments.DropDownStyle = ComboBoxStyle.DropDownList
+        cboDocuments.Width = 220
+        cboDocuments.Visible = False
+        viewActions.Controls.Add(cboDocuments)
+
+        btnOpenDocument.Text = "Open / download document"
+        btnOpenDocument.AutoSize = True
+        btnOpenDocument.Padding = New Padding(8, 2, 8, 2)
+        btnOpenDocument.Visible = False
+        AddHandler btnOpenDocument.Click, AddressOf OpenDocument
+        viewActions.Controls.Add(btnOpenDocument)
+
+        layout.Controls.Add(viewActions, 0, 3)
     End Sub
 
     Private Sub AddCredential(grid As TableLayoutPanel, col As Integer, row As Integer, labelText As String, control As Control, secret As Boolean)
