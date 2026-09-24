@@ -140,6 +140,7 @@ Public Partial Class MainForm
     Private ReadOnly lblConnection As New Label()
     Private ReadOnly chkShowSecrets As New CheckBox()
     Private ReadOnly operationTree As New TreeView()
+    Private ReadOnly workspaceSplit As New SplitContainer()
     Private ReadOnly requestPanel As New FlowLayoutPanel()
     Private ReadOnly lblOperation As New Label()
     Private ReadOnly lblSandbox As New Label()
@@ -151,6 +152,24 @@ Public Partial Class MainForm
     Private ReadOnly viewGrid As New DataGridView()
     Private ReadOnly viewDetails As New DataGridView()
     Private ReadOnly viewSplit As New SplitContainer()
+    Private ReadOnly viewDetailLayout As New TableLayoutPanel()
+    Private ReadOnly catalogHero As New TableLayoutPanel()
+    Private ReadOnly picProduct As New PictureBox()
+    Private ReadOnly productThumbnailStrip As New FlowLayoutPanel()
+    Private ReadOnly lblProductTitle As New Label()
+    Private ReadOnly lblProductEyebrow As New Label()
+    Private ReadOnly lblProductMeta As New Label()
+    Private ReadOnly lblProductCoverage As New Label()
+    Private ReadOnly txtProductDescription As New RichTextBox()
+    Private ReadOnly lblProductImageStatus As New Label()
+    Private ReadOnly btnPreviousImage As New Button()
+    Private ReadOnly btnNextImage As New Button()
+    Private ReadOnly catalogDetailTabs As New TabControl()
+    Private ReadOnly catalogOverviewGrid As New DataGridView()
+    Private ReadOnly catalogSpecificationsGrid As New DataGridView()
+    Private ReadOnly catalogRelatedGrid As New DataGridView()
+    Private ReadOnly catalogAllFieldsGrid As New DataGridView()
+    Private ReadOnly catalogSectionsPanel As New FlowLayoutPanel()
     Private ReadOnly txtResult As New TextBox()
     Private ReadOnly txtRaw As New TextBox()
     Private ReadOnly btnOpenDocument As New Button()
@@ -158,6 +177,7 @@ Public Partial Class MainForm
     Private ReadOnly cboDocuments As New ComboBox()
     Private ReadOnly cboReturnedRecords As New ComboBox()
     Private ReadOnly btnOpenReturnedRecord As New Button()
+    Private ReadOnly btnEditRequest As New Button()
     Private ReadOnly tabs As New TabControl()
 
     Private CurrentOperation As String = "catalog"
@@ -170,6 +190,10 @@ Public Partial Class MainForm
     Private NextFieldValue As String = ""
     Private ConnectionVerified As Boolean
     Private RenderingView As Boolean
+    Private CurrentViewOperation As String = ""
+    Private ReadOnly CatalogImageUrls As New List(Of String)()
+    Private ReadOnly CatalogThumbnailCards As New List(Of Panel)()
+    Private CatalogImageIndex As Integer = -1
 
 
     Public Sub New()
@@ -352,7 +376,28 @@ Public Partial Class MainForm
         If viewGrid.Rows.Count <> 1 Then Throw New InvalidOperationException("Catalog View did not render the returned product.")
         If viewGrid.Columns.Count < 4 Then Throw New InvalidOperationException("Catalog View is missing product columns.")
         If Convert.ToString(viewGrid.Rows(0).Cells(1).Value, CultureInfo.InvariantCulture) <> "Test Product" Then Throw New InvalidOperationException("Catalog View did not show the product title.")
-        If viewDetails.Rows.Count = 0 Then Throw New InvalidOperationException("Catalog View did not render selected product details.")
+        If catalogSectionsPanel.Controls.Count < 6 Then Throw New InvalidOperationException("Catalog View did not render the complete product page sections.")
+        If Not viewSplit.Panel1Collapsed Then Throw New InvalidOperationException("A single catalogue record must use the full product-page width.")
+        ShowResultWorkspace()
+        If Not workspaceSplit.Panel1Collapsed Then Throw New InvalidOperationException("Result page did not expand over the request editor.")
+        ShowRequestWorkspace()
+        If workspaceSplit.Panel1Collapsed Then Throw New InvalidOperationException("Edit request did not restore the request editor.")
+
+        Dim richCatalogItem As New Dictionary(Of String, Object) From {
+            {"attributes", New Dictionary(Of String, Object) From {
+                {"product_description", New Object() {New Dictionary(Of String, Object) From {{"value", "A useful <b>product</b>."}}}},
+                {"bullet_point", New Object() {New Dictionary(Of String, Object) From {{"value", "First benefit"}}}}
+            }},
+            {"images", New Object() {
+                New Dictionary(Of String, Object) From {
+                    {"images", New Object() {New Dictionary(Of String, Object) From {{"variant", "MAIN"}, {"link", "https://m.media-amazon.com/images/I/test.jpg"}}}}
+                }
+            }}
+        }
+        If Not CatalogDescription(richCatalogItem).Contains("A useful product.") OrElse Not CatalogDescription(richCatalogItem).Contains("First benefit") Then Throw New InvalidOperationException("Catalog product page did not render description and bullet attributes.")
+        If FindCatalogImageUrls(richCatalogItem).Count <> 1 Then Throw New InvalidOperationException("Catalog product page did not retain the returned HTTPS image.")
+        RenderCatalogProductSections(richCatalogItem)
+        If catalogSectionsPanel.Controls.Count < 6 Then Throw New InvalidOperationException("Catalog product sections did not render as a continuous page.")
 
         Dim ordersViewResult As New ApiResult With {
             .Ok = True,
@@ -613,11 +658,20 @@ Public Partial Class MainForm
         AddHandler operationTree.AfterSelect, AddressOf OperationSelected
         mainSplit.Panel1.Controls.Add(operationTree)
 
-        Dim rightSplit As New SplitContainer With {.Dock = DockStyle.Fill, .Orientation = Orientation.Horizontal, .SplitterDistance = 430}
-        mainSplit.Panel2.Controls.Add(rightSplit)
+        workspaceSplit.Dock = DockStyle.Fill
+        workspaceSplit.Orientation = Orientation.Horizontal
+        workspaceSplit.SplitterDistance = 360
+        workspaceSplit.SplitterWidth = 18
+        workspaceSplit.BackColor = Color.FromArgb(37, 99, 235)
+        workspaceSplit.Panel1.BackColor = SystemColors.Control
+        workspaceSplit.Panel2.BackColor = Color.FromArgb(247, 245, 240)
+        AddHandler workspaceSplit.Paint, AddressOf PaintWorkspaceSplitter
+        AddHandler workspaceSplit.SplitterMoved, Sub(sender, e) workspaceSplit.Invalidate()
+        AddHandler workspaceSplit.MouseDoubleClick, AddressOf WorkspaceSplitterDoubleClick
+        mainSplit.Panel2.Controls.Add(workspaceSplit)
 
         Dim requestHost As New Panel With {.Dock = DockStyle.Fill, .Padding = New Padding(10)}
-        rightSplit.Panel1.Controls.Add(requestHost)
+        workspaceSplit.Panel1.Controls.Add(requestHost)
         lblOperation.Dock = DockStyle.Top
         lblOperation.Height = 34
         lblOperation.Font = New Font(Font, FontStyle.Bold)
@@ -655,7 +709,7 @@ Public Partial Class MainForm
         tabs.TabPages.Add(viewTab)
         tabs.TabPages.Add(resultTab)
         tabs.TabPages.Add(rawTab)
-        rightSplit.Panel2.Controls.Add(tabs)
+        workspaceSplit.Panel2.Controls.Add(tabs)
 
         BuildResultView(viewTab)
 
@@ -733,11 +787,16 @@ Public Partial Class MainForm
     End Sub
 
     Private Sub BuildResultView(viewTab As TabPage)
+        Dim canvas = Color.FromArgb(247, 245, 240)
+        Dim ink = Color.FromArgb(30, 38, 48)
+        Dim accent = Color.FromArgb(37, 99, 235)
+        viewTab.BackColor = canvas
         Dim layout As New TableLayoutPanel With {
             .Dock = DockStyle.Fill,
             .ColumnCount = 1,
             .RowCount = 4,
-            .Padding = New Padding(8)
+            .Padding = New Padding(14, 10, 14, 10),
+            .BackColor = canvas
         }
         layout.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
         layout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
@@ -747,7 +806,8 @@ Public Partial Class MainForm
         viewTab.Controls.Add(layout)
 
         lblViewTitle.AutoSize = True
-        lblViewTitle.Font = New Font(Font.FontFamily, 14.0F, FontStyle.Bold)
+        lblViewTitle.Font = New Font("Bahnschrift SemiBold", 17.0F, FontStyle.Bold)
+        lblViewTitle.ForeColor = ink
         lblViewTitle.Text = "No result yet"
         lblViewTitle.Margin = New Padding(3, 2, 3, 2)
         layout.Controls.Add(lblViewTitle, 0, 0)
@@ -775,27 +835,42 @@ Public Partial Class MainForm
         viewGrid.SelectionMode = DataGridViewSelectionMode.FullRowSelect
         viewGrid.RowHeadersVisible = False
         viewGrid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
-        viewGrid.BackgroundColor = SystemColors.Window
-        viewGrid.BorderStyle = BorderStyle.FixedSingle
+        viewGrid.BackgroundColor = Color.White
+        viewGrid.BorderStyle = BorderStyle.None
+        viewGrid.CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal
+        viewGrid.GridColor = Color.FromArgb(226, 222, 214)
+        viewGrid.EnableHeadersVisualStyles = False
+        viewGrid.ColumnHeadersDefaultCellStyle.BackColor = ink
+        viewGrid.ColumnHeadersDefaultCellStyle.ForeColor = Color.White
+        viewGrid.ColumnHeadersDefaultCellStyle.Font = New Font("Segoe UI Semibold", 9.0F, FontStyle.Bold)
+        viewGrid.ColumnHeadersHeight = 34
+        viewGrid.RowTemplate.Height = 34
+        viewGrid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(251, 249, 245)
+        viewGrid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(255, 235, 205)
+        viewGrid.DefaultCellStyle.SelectionForeColor = ink
         viewGrid.AutoGenerateColumns = False
         AddHandler viewGrid.SelectionChanged, AddressOf ViewGridSelectionChanged
         AddHandler viewGrid.CellDoubleClick, AddressOf ViewGridDoubleClick
         viewSplit.Panel1.Controls.Add(viewGrid)
 
-        Dim detailLayout As New TableLayoutPanel With {
-            .Dock = DockStyle.Fill,
-            .ColumnCount = 1,
-            .RowCount = 2
-        }
-        detailLayout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
-        detailLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
-        viewSplit.Panel2.Controls.Add(detailLayout)
+        viewDetailLayout.Dock = DockStyle.Fill
+        viewDetailLayout.ColumnCount = 1
+        viewDetailLayout.RowCount = 3
+        viewDetailLayout.Padding = New Padding(8, 0, 0, 0)
+        viewDetailLayout.BackColor = canvas
+        viewDetailLayout.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        viewDetailLayout.RowStyles.Add(New RowStyle(SizeType.Absolute, 0.0F))
+        viewDetailLayout.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+        viewSplit.Panel2.Controls.Add(viewDetailLayout)
 
         lblViewDetails.AutoSize = True
         lblViewDetails.Font = New Font(Font, FontStyle.Bold)
         lblViewDetails.Text = "Details"
         lblViewDetails.Margin = New Padding(3, 4, 3, 4)
-        detailLayout.Controls.Add(lblViewDetails, 0, 0)
+        viewDetailLayout.Controls.Add(lblViewDetails, 0, 0)
+
+        BuildCatalogHero(ink, accent, canvas)
+        viewDetailLayout.Controls.Add(catalogHero, 0, 1)
 
         viewDetails.Dock = DockStyle.Fill
         viewDetails.ReadOnly = True
@@ -806,8 +881,16 @@ Public Partial Class MainForm
         viewDetails.SelectionMode = DataGridViewSelectionMode.FullRowSelect
         viewDetails.RowHeadersVisible = False
         viewDetails.AutoGenerateColumns = False
-        viewDetails.BackgroundColor = SystemColors.Window
-        viewDetails.BorderStyle = BorderStyle.FixedSingle
+        viewDetails.BackgroundColor = Color.White
+        viewDetails.BorderStyle = BorderStyle.None
+        viewDetails.CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal
+        viewDetails.GridColor = Color.FromArgb(230, 226, 218)
+        viewDetails.EnableHeadersVisualStyles = False
+        viewDetails.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(63, 72, 82)
+        viewDetails.ColumnHeadersDefaultCellStyle.ForeColor = Color.White
+        viewDetails.ColumnHeadersDefaultCellStyle.Font = New Font("Segoe UI Semibold", 9.0F, FontStyle.Bold)
+        viewDetails.ColumnHeadersHeight = 32
+        viewDetails.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(251, 249, 245)
         viewDetails.Columns.Add(New DataGridViewTextBoxColumn With {
             .Name = "Field",
             .HeaderText = "Field",
@@ -819,10 +902,24 @@ Public Partial Class MainForm
             .HeaderText = "Value",
             .AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill
         })
-        detailLayout.Controls.Add(viewDetails, 0, 1)
+        viewDetailLayout.Controls.Add(viewDetails, 0, 2)
 
         viewDetails.DefaultCellStyle.WrapMode = DataGridViewTriState.True
         viewDetails.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.AllCellsExceptHeaders
+
+        BuildCatalogDetailTabs(ink, accent, canvas)
+        viewDetailLayout.Controls.Add(catalogDetailTabs, 0, 2)
+        catalogDetailTabs.Visible = False
+
+        catalogSectionsPanel.AutoSize = True
+        catalogSectionsPanel.AutoSizeMode = AutoSizeMode.GrowAndShrink
+        catalogSectionsPanel.FlowDirection = FlowDirection.TopDown
+        catalogSectionsPanel.WrapContents = False
+        catalogSectionsPanel.Margin = New Padding(0)
+        catalogSectionsPanel.Padding = New Padding(12, 8, 18, 24)
+        catalogSectionsPanel.BackColor = canvas
+        catalogSectionsPanel.Visible = False
+        viewDetailLayout.Controls.Add(catalogSectionsPanel, 0, 2)
 
         Dim viewActions As New FlowLayoutPanel With {
             .Dock = DockStyle.Fill,
@@ -832,6 +929,17 @@ Public Partial Class MainForm
             .WrapContents = True,
             .Padding = New Padding(0, 6, 0, 0)
         }
+
+        btnEditRequest.Text = "← Edit request"
+        btnEditRequest.AutoSize = True
+        btnEditRequest.Padding = New Padding(12, 4, 12, 4)
+        btnEditRequest.FlatStyle = FlatStyle.Flat
+        btnEditRequest.BackColor = ink
+        btnEditRequest.ForeColor = Color.White
+        btnEditRequest.FlatAppearance.BorderColor = ink
+        btnEditRequest.Visible = False
+        AddHandler btnEditRequest.Click, Sub(sender, e) ShowRequestWorkspace()
+        viewActions.Controls.Add(btnEditRequest)
 
         cboReturnedRecords.DropDownStyle = ComboBoxStyle.DropDownList
         cboReturnedRecords.Width = 300
@@ -865,6 +973,246 @@ Public Partial Class MainForm
         viewActions.Controls.Add(btnOpenDocument)
 
         layout.Controls.Add(viewActions, 0, 3)
+    End Sub
+
+    Private Sub BuildCatalogDetailTabs(ink As Color, accent As Color, canvas As Color)
+        catalogDetailTabs.Dock = DockStyle.Fill
+        catalogDetailTabs.Font = New Font("Segoe UI Semibold", 9.0F, FontStyle.Bold)
+        catalogDetailTabs.Padding = New Point(16, 7)
+
+        Dim tabsAndGrids = New Tuple(Of String, DataGridView)() {
+            Tuple.Create("Overview", catalogOverviewGrid),
+            Tuple.Create("Specifications", catalogSpecificationsGrid),
+            Tuple.Create("Category && related", catalogRelatedGrid),
+            Tuple.Create("All SP-API fields", catalogAllFieldsGrid)
+        }
+        For Each entry In tabsAndGrids
+            Dim page As New TabPage(entry.Item1) With {.BackColor = canvas, .Padding = New Padding(8)}
+            ConfigureCatalogDetailGrid(entry.Item2, ink, accent)
+            page.Controls.Add(entry.Item2)
+            catalogDetailTabs.TabPages.Add(page)
+        Next
+    End Sub
+
+    Private Sub ConfigureCatalogDetailGrid(grid As DataGridView, ink As Color, accent As Color)
+        grid.Dock = DockStyle.Fill
+        grid.ReadOnly = True
+        grid.AllowUserToAddRows = False
+        grid.AllowUserToDeleteRows = False
+        grid.AllowUserToResizeRows = False
+        grid.MultiSelect = False
+        grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect
+        grid.RowHeadersVisible = False
+        grid.AutoGenerateColumns = False
+        grid.BackgroundColor = Color.White
+        grid.BorderStyle = BorderStyle.None
+        grid.CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal
+        grid.GridColor = Color.FromArgb(231, 228, 221)
+        grid.EnableHeadersVisualStyles = False
+        grid.ColumnHeadersDefaultCellStyle.BackColor = ink
+        grid.ColumnHeadersDefaultCellStyle.ForeColor = Color.White
+        grid.ColumnHeadersDefaultCellStyle.Font = New Font("Segoe UI Semibold", 9.0F, FontStyle.Bold)
+        grid.ColumnHeadersHeight = 34
+        grid.DefaultCellStyle.WrapMode = DataGridViewTriState.True
+        grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(255, 235, 205)
+        grid.DefaultCellStyle.SelectionForeColor = ink
+        grid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(252, 250, 246)
+        grid.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.AllCellsExceptHeaders
+        grid.Columns.Add(New DataGridViewTextBoxColumn With {
+            .Name = "Property",
+            .HeaderText = "Property",
+            .Width = 245,
+            .AutoSizeMode = DataGridViewAutoSizeColumnMode.None
+        })
+        grid.Columns.Add(New DataGridViewTextBoxColumn With {
+            .Name = "Value",
+            .HeaderText = "Value",
+            .AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill
+        })
+    End Sub
+
+    Private Sub BuildCatalogHero(ink As Color, accent As Color, canvas As Color)
+        catalogHero.Dock = DockStyle.Fill
+        catalogHero.ColumnCount = 2
+        catalogHero.RowCount = 1
+        catalogHero.Padding = New Padding(0, 2, 0, 10)
+        catalogHero.BackColor = canvas
+        catalogHero.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 224.0F))
+        catalogHero.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        catalogHero.Visible = False
+
+        Dim imageCard As New TableLayoutPanel With {
+            .Dock = DockStyle.Fill,
+            .BackColor = Color.White,
+            .Padding = New Padding(10),
+            .Margin = New Padding(0, 0, 18, 0),
+            .ColumnCount = 1,
+            .RowCount = 3
+        }
+        imageCard.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        imageCard.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+        imageCard.RowStyles.Add(New RowStyle(SizeType.Absolute, 98.0F))
+        imageCard.RowStyles.Add(New RowStyle(SizeType.Absolute, 58.0F))
+        picProduct.Dock = DockStyle.Fill
+        picProduct.BackColor = Color.White
+        picProduct.SizeMode = PictureBoxSizeMode.Zoom
+        picProduct.Cursor = Cursors.Hand
+        AddHandler picProduct.MouseWheel, Sub(sender, e) MoveCatalogImage(If(e.Delta < 0, 1, -1))
+        AddHandler picProduct.DoubleClick, Sub(sender, e) OpenCurrentCatalogImage()
+        AddHandler picProduct.LoadCompleted, Sub(sender, e)
+                                                    If e.Error IsNot Nothing Then
+                                                        lblProductImageStatus.Text = "Image unavailable"
+                                                    ElseIf CatalogImageIndex >= 0 Then
+                                                        lblProductImageStatus.Text = (CatalogImageIndex + 1).ToString(CultureInfo.InvariantCulture) & " / " & CatalogImageUrls.Count.ToString(CultureInfo.InvariantCulture) & " · wheel"
+                                                    End If
+                                                End Sub
+        imageCard.Controls.Add(picProduct, 0, 0)
+
+        Dim imageFooter As New TableLayoutPanel With {
+            .Dock = DockStyle.Fill,
+            .ColumnCount = 3,
+            .RowCount = 1,
+            .BackColor = Color.White,
+            .Padding = New Padding(6, 7, 6, 5)
+        }
+        imageFooter.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 64.0F))
+        imageFooter.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        imageFooter.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 64.0F))
+        imageFooter.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+        btnPreviousImage.Text = "<"
+        btnPreviousImage.Dock = DockStyle.Fill
+        btnPreviousImage.Margin = New Padding(0)
+        btnPreviousImage.FlatStyle = FlatStyle.Flat
+        btnPreviousImage.FlatAppearance.BorderColor = accent
+        btnPreviousImage.BackColor = accent
+        btnPreviousImage.ForeColor = Color.White
+        btnPreviousImage.Font = New Font("Segoe UI Semibold", 12.0F, FontStyle.Bold)
+        btnNextImage.Text = ">"
+        btnNextImage.Dock = DockStyle.Fill
+        btnNextImage.Margin = New Padding(0)
+        btnNextImage.FlatStyle = FlatStyle.Flat
+        btnNextImage.FlatAppearance.BorderColor = accent
+        btnNextImage.BackColor = accent
+        btnNextImage.ForeColor = Color.White
+        btnNextImage.Font = New Font("Segoe UI Semibold", 12.0F, FontStyle.Bold)
+        lblProductImageStatus.AutoSize = False
+        lblProductImageStatus.Dock = DockStyle.Fill
+        lblProductImageStatus.Margin = New Padding(8, 0, 8, 0)
+        lblProductImageStatus.TextAlign = ContentAlignment.MiddleCenter
+        lblProductImageStatus.ForeColor = ink
+        lblProductImageStatus.Font = New Font("Segoe UI Semibold", 9.0F, FontStyle.Bold)
+        AddHandler btnPreviousImage.Click, Sub(sender, e) MoveCatalogImage(-1)
+        AddHandler btnNextImage.Click, Sub(sender, e) MoveCatalogImage(1)
+        Dim imageTip As New ToolTip()
+        imageTip.SetToolTip(picProduct, "Use the mouse wheel or arrows to browse images. Double-click to open the current image.")
+        imageTip.SetToolTip(btnPreviousImage, "Previous product image")
+        imageTip.SetToolTip(btnNextImage, "Next product image")
+        imageFooter.Controls.Add(btnPreviousImage, 0, 0)
+        imageFooter.Controls.Add(lblProductImageStatus, 1, 0)
+        imageFooter.Controls.Add(btnNextImage, 2, 0)
+
+        productThumbnailStrip.Dock = DockStyle.Fill
+        productThumbnailStrip.FlowDirection = FlowDirection.LeftToRight
+        productThumbnailStrip.WrapContents = False
+        productThumbnailStrip.AutoScroll = True
+        productThumbnailStrip.BackColor = Color.White
+        productThumbnailStrip.Padding = New Padding(6, 9, 6, 7)
+        productThumbnailStrip.Margin = New Padding(0)
+        imageCard.Controls.Add(productThumbnailStrip, 0, 1)
+        imageCard.Controls.Add(imageFooter, 0, 2)
+        catalogHero.Controls.Add(imageCard, 0, 0)
+
+        Dim copy As New TableLayoutPanel With {
+            .Dock = DockStyle.Fill,
+            .ColumnCount = 1,
+            .RowCount = 5,
+            .BackColor = canvas,
+            .Padding = New Padding(0)
+        }
+        copy.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        copy.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        copy.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        copy.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        copy.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
+
+        lblProductEyebrow.AutoSize = True
+        lblProductEyebrow.Font = New Font("Segoe UI Semibold", 8.5F, FontStyle.Bold)
+        lblProductEyebrow.ForeColor = accent
+        lblProductEyebrow.Margin = New Padding(0, 2, 0, 4)
+        copy.Controls.Add(lblProductEyebrow, 0, 0)
+
+        lblProductTitle.AutoSize = True
+        lblProductTitle.Font = New Font("Bahnschrift SemiBold", 15.0F, FontStyle.Bold)
+        lblProductTitle.ForeColor = ink
+        lblProductTitle.MaximumSize = New Size(700, 58)
+        lblProductTitle.Margin = New Padding(0, 0, 0, 5)
+        copy.Controls.Add(lblProductTitle, 0, 1)
+
+        lblProductMeta.AutoSize = True
+        lblProductMeta.Font = New Font("Segoe UI", 9.0F, FontStyle.Regular)
+        lblProductMeta.ForeColor = Color.FromArgb(82, 88, 94)
+        lblProductMeta.MaximumSize = New Size(760, 72)
+        lblProductMeta.Margin = New Padding(0, 0, 0, 7)
+        copy.Controls.Add(lblProductMeta, 0, 2)
+
+        lblProductCoverage.AutoSize = True
+        lblProductCoverage.Font = New Font("Segoe UI Semibold", 9.0F, FontStyle.Bold)
+        lblProductCoverage.ForeColor = Color.FromArgb(30, 64, 175)
+        lblProductCoverage.BackColor = Color.FromArgb(235, 241, 255)
+        lblProductCoverage.Padding = New Padding(9, 6, 9, 6)
+        lblProductCoverage.Margin = New Padding(0, 0, 0, 9)
+        lblProductCoverage.MaximumSize = New Size(760, 58)
+        copy.Controls.Add(lblProductCoverage, 0, 3)
+
+        txtProductDescription.Dock = DockStyle.Fill
+        txtProductDescription.ReadOnly = True
+        txtProductDescription.BorderStyle = BorderStyle.None
+        txtProductDescription.BackColor = canvas
+        txtProductDescription.ForeColor = ink
+        txtProductDescription.Font = New Font("Segoe UI", 9.0F)
+        txtProductDescription.ScrollBars = RichTextBoxScrollBars.None
+        txtProductDescription.TabStop = False
+        copy.Controls.Add(txtProductDescription, 0, 4)
+        catalogHero.Controls.Add(copy, 1, 0)
+    End Sub
+
+    Private Sub ShowResultWorkspace()
+        If workspaceSplit Is Nothing Then Return
+        workspaceSplit.Panel1Collapsed = True
+        btnEditRequest.Visible = True
+        tabs.SelectedIndex = 0
+        PerformLayout()
+    End Sub
+
+    Private Sub ShowRequestWorkspace()
+        If workspaceSplit Is Nothing Then Return
+        workspaceSplit.Panel1Collapsed = False
+        btnEditRequest.Visible = False
+    End Sub
+
+    Private Sub PaintWorkspaceSplitter(sender As Object, e As PaintEventArgs)
+        If workspaceSplit.Panel1Collapsed OrElse workspaceSplit.Panel2Collapsed Then Return
+        Dim bounds = workspaceSplit.SplitterRectangle
+        If bounds.Width <= 0 OrElse bounds.Height <= 0 Then Return
+
+        Using splitterBrush As New SolidBrush(Color.FromArgb(37, 99, 235))
+            e.Graphics.FillRectangle(splitterBrush, bounds)
+        End Using
+        Using labelFont As New Font("Segoe UI Semibold", 7.5F, FontStyle.Bold),
+              labelBrush As New SolidBrush(Color.White)
+            Dim label = "DRAG TO RESIZE   |   DOUBLE-CLICK FOR FULL RESULTS"
+            Dim measured = e.Graphics.MeasureString(label, labelFont)
+            Dim x = bounds.Left + Math.Max(8.0F, (bounds.Width - measured.Width) / 2.0F)
+            Dim y = bounds.Top + Math.Max(0.0F, (bounds.Height - measured.Height) / 2.0F)
+            e.Graphics.DrawString(label, labelFont, labelBrush, x, y)
+        End Using
+    End Sub
+
+    Private Sub WorkspaceSplitterDoubleClick(sender As Object, e As MouseEventArgs)
+        If workspaceSplit.Panel1Collapsed Then Return
+        Dim bounds = workspaceSplit.SplitterRectangle
+        bounds.Inflate(0, 4)
+        If bounds.Contains(e.Location) Then ShowResultWorkspace()
     End Sub
 
     Private Sub AddCredential(grid As TableLayoutPanel, col As Integer, row As Integer, labelText As String, control As Control, secret As Boolean)
@@ -903,6 +1251,7 @@ Public Partial Class MainForm
     End Sub
 
     Private Sub SelectOperation(id As String)
+        ShowRequestWorkspace()
         SaveVisibleFieldValues()
         If Not String.Equals(id, CurrentOperation, StringComparison.Ordinal) Then ClearPaginationTokens()
         CurrentOperation = id
@@ -1654,6 +2003,8 @@ Public Partial Class MainForm
     Private Sub ClearResultView(title As String, subtitle As String)
         RenderingView = True
         Try
+            CurrentViewOperation = ""
+            SetCatalogViewMode(False)
             lblViewTitle.Text = title
             lblViewSubtitle.Text = subtitle
             lblViewDetails.Text = "Details"
@@ -1669,6 +2020,8 @@ Public Partial Class MainForm
     Private Sub RenderResultView(operation As String, result As ApiResult)
         RenderingView = True
         Try
+            CurrentViewOperation = operation
+            SetCatalogViewMode(operation = "catalog" AndAlso result.Ok)
             viewGrid.Rows.Clear()
             viewGrid.Columns.Clear()
             viewDetails.Rows.Clear()
@@ -1781,8 +2134,9 @@ Public Partial Class MainForm
 
     Private Sub RenderCatalogView(data As Dictionary(Of String, Object))
         Dim items = ListValue(GetValue(data, "items"))
-        lblViewTitle.Text = "Products"
+        lblViewTitle.Text = If(items.Count = 1, "Product page", "Product catalogue")
         lblViewSubtitle.Text = items.Count.ToString(CultureInfo.InvariantCulture) & " catalogue record(s) returned"
+        ConfigureCatalogPageLayout(items.Count)
 
         Dim family = AsDict(GetValue(data, "family"))
         If family.Count > 0 Then
@@ -1794,7 +2148,7 @@ Public Partial Class MainForm
         End If
 
         If items.Count = 0 Then
-            RenderDetailsFromObject(data)
+            RenderCatalogProductSections(data)
             viewSplit.Panel1Collapsed = True
             Return
         End If
@@ -1817,7 +2171,627 @@ Public Partial Class MainForm
                        FriendlyToken(StringValue(GetValue(productType, "productType"))),
                        StringValue(GetValue(summary, "marketplaceId")))
         Next
-        viewSplit.Panel1Collapsed = False
+        viewSplit.Panel1Collapsed = (items.Count = 1)
+    End Sub
+
+    Private Sub ConfigureCatalogPageLayout(productCount As Integer)
+        Dim singleProduct = productCount = 1
+        If catalogHero.ColumnStyles.Count > 0 Then catalogHero.ColumnStyles(0).Width = If(singleProduct, 400.0F, 310.0F)
+        If viewDetailLayout.RowStyles.Count >= 2 Then viewDetailLayout.RowStyles(1).Height = If(singleProduct, 500.0F, 405.0F)
+        catalogHero.Padding = New Padding(If(singleProduct, 18, 4), 12, If(singleProduct, 24, 4), 24)
+    End Sub
+
+    Private Sub SetCatalogViewMode(enabled As Boolean)
+        catalogHero.Visible = enabled
+        catalogDetailTabs.Visible = False
+        catalogSectionsPanel.Visible = enabled
+        viewDetails.Visible = Not enabled
+        If viewDetailLayout.RowStyles.Count >= 2 Then
+            viewDetailLayout.RowStyles(1).SizeType = SizeType.Absolute
+            viewDetailLayout.RowStyles(1).Height = If(enabled, 245.0F, 0.0F)
+        End If
+        If viewDetailLayout.RowStyles.Count >= 3 Then
+            viewDetailLayout.RowStyles(2).SizeType = If(enabled, SizeType.AutoSize, SizeType.Percent)
+            viewDetailLayout.RowStyles(2).Height = If(enabled, 0.0F, 100.0F)
+        End If
+
+        If enabled Then
+            If viewSplit.Orientation <> Orientation.Vertical Then
+                viewSplit.Panel1MinSize = 0
+                viewSplit.Panel2MinSize = 0
+                viewSplit.SplitterDistance = 1
+                viewSplit.Orientation = Orientation.Vertical
+            End If
+            Dim available = Math.Max(0, viewSplit.ClientSize.Width - viewSplit.SplitterWidth)
+            If available > 80 Then viewSplit.SplitterDistance = Math.Min(390, Math.Max(40, CInt(available * 0.34R)))
+            viewSplit.Panel2.AutoScroll = True
+            viewSplit.Panel2.AutoScrollPosition = Point.Empty
+            viewDetailLayout.Dock = DockStyle.Top
+            viewDetailLayout.AutoSize = True
+            viewDetailLayout.AutoSizeMode = AutoSizeMode.GrowAndShrink
+            lblViewDetails.Text = "Selected product"
+        Else
+            picProduct.CancelAsync()
+            picProduct.Image = Nothing
+            CatalogImageUrls.Clear()
+            CatalogImageIndex = -1
+            viewSplit.Panel2.AutoScroll = False
+            viewDetailLayout.AutoSize = False
+            viewDetailLayout.Dock = DockStyle.Fill
+            If viewSplit.Orientation <> Orientation.Horizontal Then
+                viewSplit.Panel1MinSize = 0
+                viewSplit.Panel2MinSize = 0
+                viewSplit.SplitterDistance = 1
+                viewSplit.Orientation = Orientation.Horizontal
+            End If
+            Dim available = Math.Max(0, viewSplit.ClientSize.Height - viewSplit.SplitterWidth)
+            If available > 80 Then viewSplit.SplitterDistance = Math.Min(210, Math.Max(40, CInt(available * 0.48R)))
+        End If
+    End Sub
+
+    Private Sub RenderCatalogProductDetail(item As Dictionary(Of String, Object))
+        Dim summary = FirstDictionary(item, "summaries")
+        Dim productType = FirstDictionary(item, "productTypes")
+        Dim asin = StringValue(GetValue(item, "asin"))
+        Dim brand = FirstNonEmpty(StringValue(GetValue(summary, "brand")), FirstCatalogAttribute(item, "brand"))
+        Dim title = FirstNonEmpty(CatalogTitle(item), FirstCatalogAttribute(item, "item_name"), "Untitled product")
+        Dim typeName = FirstNonEmpty(FriendlyToken(StringValue(GetValue(productType, "productType"))), FriendlyToken(FirstCatalogAttribute(item, "item_type_name")))
+        Dim model = FirstCatalogAttribute(item, "model_number")
+        Dim manufacturer = FirstCatalogAttribute(item, "manufacturer")
+
+        lblViewDetails.Text = "Selected product · every returned field is listed below"
+        lblProductEyebrow.Text = String.Join("  ·  ", New String() {brand.ToUpperInvariant(), asin}.Where(Function(value) value <> ""))
+        lblProductTitle.Text = title
+        Dim identityParts As New List(Of String)(New String() {typeName, If(asin = "", "", "ASIN " & asin), If(model = "", "", "Model " & model), manufacturer}.Where(Function(value) value <> ""))
+        Dim identifiers = CatalogIdentifierLabels(item)
+        If identifiers.Count > 0 Then identityParts.Add(String.Join("   ", identifiers))
+        lblProductMeta.Text = String.Join(Environment.NewLine, identityParts)
+        lblProductCoverage.Text = CatalogCoverageText(item)
+        txtProductDescription.Text = CatalogDescription(item)
+        If txtProductDescription.Text = "" Then txtProductDescription.Text = "Amazon did not return a description or bullet points for this catalogue record. Every available attribute is still listed below."
+
+        CatalogImageUrls.Clear()
+        CatalogImageUrls.AddRange(FindCatalogImageUrls(item))
+        CatalogImageIndex = If(CatalogImageUrls.Count > 0, 0, -1)
+        BuildCatalogThumbnails()
+        ShowCatalogImage()
+        RenderCatalogProductSections(item)
+    End Sub
+
+    Private Function FindCatalogImageUrls(item As Dictionary(Of String, Object)) As List(Of String)
+        Dim ranked As New List(Of Tuple(Of Integer, String))()
+        For Each groupObject In ListValue(GetValue(item, "images"))
+            Dim group = AsDict(groupObject)
+            For Each imageObject In ListValue(GetValue(group, "images"))
+                Dim imageData = AsDict(imageObject)
+                Dim link = StringValue(GetValue(imageData, "link"))
+                If SafeCatalogImageUrl(link) = "" Then Continue For
+                Dim imageVariant = StringValue(GetValue(imageData, "variant")).ToUpperInvariant()
+                ranked.Add(Tuple.Create(If(imageVariant = "MAIN", 0, 1), link))
+            Next
+        Next
+
+        Return ranked.OrderBy(Function(entry) entry.Item1).
+            Select(Function(entry) entry.Item2).
+            Distinct(StringComparer.OrdinalIgnoreCase).
+            ToList()
+    End Function
+
+    Private Function SafeCatalogImageUrl(value As String) As String
+        Dim uri As Uri = Nothing
+        If Not Uri.TryCreate(value, UriKind.Absolute, uri) OrElse uri.Scheme <> Uri.UriSchemeHttps Then Return ""
+        Dim host = uri.Host.ToLowerInvariant()
+        Dim allowed = host.EndsWith(".media-amazon.com", StringComparison.Ordinal) OrElse
+                      host.EndsWith(".ssl-images-amazon.com", StringComparison.Ordinal) OrElse
+                      host.EndsWith(".amazon.com", StringComparison.Ordinal) OrElse
+                      host.EndsWith(".amazonaws.com", StringComparison.Ordinal) OrElse
+                      host.EndsWith(".cloudfront.net", StringComparison.Ordinal)
+        Return If(allowed, uri.AbsoluteUri, "")
+    End Function
+
+    Private Sub BuildCatalogThumbnails()
+        For Each card In CatalogThumbnailCards
+            card.Dispose()
+        Next
+        CatalogThumbnailCards.Clear()
+        productThumbnailStrip.Controls.Clear()
+
+        For i As Integer = 0 To Math.Min(CatalogImageUrls.Count, 20) - 1
+            Dim thumbnailIndex = i
+            Dim card As New Panel With {
+                .Width = 86,
+                .Height = 76,
+                .Padding = New Padding(3),
+                .Margin = New Padding(4, 2, 4, 2),
+                .BackColor = Color.FromArgb(218, 223, 232),
+                .Cursor = Cursors.Hand,
+                .Tag = thumbnailIndex
+            }
+            Dim thumbnail As New PictureBox With {
+                .Dock = DockStyle.Fill,
+                .BackColor = Color.White,
+                .SizeMode = PictureBoxSizeMode.Zoom,
+                .Cursor = Cursors.Hand,
+                .Tag = thumbnailIndex
+            }
+            AddHandler card.Click, Sub(sender, e) SelectCatalogImage(thumbnailIndex)
+            AddHandler thumbnail.Click, Sub(sender, e) SelectCatalogImage(thumbnailIndex)
+            card.Controls.Add(thumbnail)
+            productThumbnailStrip.Controls.Add(card)
+            CatalogThumbnailCards.Add(card)
+            Try
+                thumbnail.LoadAsync(CatalogImageUrls(i))
+            Catch
+                ' The main image retains the actionable error state.
+            End Try
+        Next
+        productThumbnailStrip.Visible = CatalogImageUrls.Count > 0
+        UpdateCatalogThumbnailSelection()
+    End Sub
+
+    Private Sub SelectCatalogImage(index As Integer)
+        If index < 0 OrElse index >= CatalogImageUrls.Count Then Return
+        CatalogImageIndex = index
+        ShowCatalogImage()
+    End Sub
+
+    Private Sub UpdateCatalogThumbnailSelection()
+        For i As Integer = 0 To CatalogThumbnailCards.Count - 1
+            CatalogThumbnailCards(i).BackColor = If(i = CatalogImageIndex, Color.FromArgb(37, 99, 235), Color.FromArgb(218, 223, 232))
+            CatalogThumbnailCards(i).Padding = If(i = CatalogImageIndex, New Padding(4), New Padding(2))
+        Next
+    End Sub
+
+    Private Sub MoveCatalogImage(offset As Integer)
+        If CatalogImageUrls.Count < 2 Then Return
+        CatalogImageIndex = (CatalogImageIndex + offset + CatalogImageUrls.Count) Mod CatalogImageUrls.Count
+        ShowCatalogImage()
+    End Sub
+
+    Private Sub OpenCurrentCatalogImage()
+        If CatalogImageIndex < 0 OrElse CatalogImageIndex >= CatalogImageUrls.Count Then Return
+        Try
+            Process.Start(CatalogImageUrls(CatalogImageIndex))
+        Catch ex As Exception
+            MessageBox.Show("Could not open the product image: " & ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error)
+        End Try
+    End Sub
+
+    Private Sub ShowCatalogImage()
+        picProduct.CancelAsync()
+        picProduct.Image = Nothing
+        Dim hasImage = CatalogImageIndex >= 0 AndAlso CatalogImageIndex < CatalogImageUrls.Count
+        btnPreviousImage.Enabled = CatalogImageUrls.Count > 1
+        btnNextImage.Enabled = CatalogImageUrls.Count > 1
+        UpdateCatalogThumbnailSelection()
+        If Not hasImage Then
+            lblProductImageStatus.Text = "No image returned"
+            Return
+        End If
+
+        lblProductImageStatus.Text = "Loading " & (CatalogImageIndex + 1).ToString(CultureInfo.InvariantCulture) & " / " & CatalogImageUrls.Count.ToString(CultureInfo.InvariantCulture)
+        Try
+            picProduct.LoadAsync(CatalogImageUrls(CatalogImageIndex))
+        Catch ex As Exception
+            lblProductImageStatus.Text = "Image unavailable"
+        End Try
+    End Sub
+
+    Private Function FirstCatalogAttribute(item As Dictionary(Of String, Object), key As String) As String
+        Dim attributes = AsDict(GetValue(item, "attributes"))
+        For Each raw In ListValue(GetValue(attributes, key))
+            Dim entry = AsDict(raw)
+            Dim value = GetValue(entry, "value")
+            If value Is Nothing Then value = GetValue(entry, "displayValue")
+            Dim text = ViewValue(value)
+            If text <> "" Then Return CleanCatalogText(text)
+        Next
+        Return ""
+    End Function
+
+    Private Function CatalogAttributeValues(item As Dictionary(Of String, Object), key As String) As List(Of String)
+        Dim values As New List(Of String)()
+        Dim attributes = AsDict(GetValue(item, "attributes"))
+        For Each raw In ListValue(GetValue(attributes, key))
+            Dim entry = AsDict(raw)
+            Dim value = GetValue(entry, "value")
+            If value Is Nothing Then value = GetValue(entry, "displayValue")
+            Dim text = CleanCatalogText(ViewValue(value))
+            If text <> "" Then values.Add(text)
+        Next
+        Return values.Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+    End Function
+
+    Private Function CatalogDescription(item As Dictionary(Of String, Object)) As String
+        Dim sections As New List(Of String)()
+        Dim descriptions = CatalogAttributeValues(item, "product_description")
+        If descriptions.Count > 0 Then sections.Add(String.Join(Environment.NewLine & Environment.NewLine, descriptions))
+
+        Dim bullets = CatalogAttributeValues(item, "bullet_point")
+        If bullets.Count > 0 Then
+            sections.Add("HIGHLIGHTS" & Environment.NewLine & String.Join(Environment.NewLine, bullets.Select(Function(value) "• " & value)))
+        End If
+
+        Dim features = CatalogAttributeValues(item, "special_feature")
+        If features.Count = 0 Then features = CatalogAttributeValues(item, "special_features")
+        If features.Count > 0 Then sections.Add("FEATURES" & Environment.NewLine & String.Join(Environment.NewLine, features.Select(Function(value) "• " & value)))
+        Return String.Join(Environment.NewLine & Environment.NewLine, sections)
+    End Function
+
+    Private Function CleanCatalogText(value As String) As String
+        If String.IsNullOrWhiteSpace(value) Then Return ""
+        Dim decoded = WebUtility.HtmlDecode(value)
+        decoded = Regex.Replace(decoded, "<\s*br\s*/?\s*>", Environment.NewLine, RegexOptions.IgnoreCase)
+        decoded = Regex.Replace(decoded, "<\s*/?\s*(p|li|ul|ol)\b[^>]*>", Environment.NewLine, RegexOptions.IgnoreCase)
+        decoded = Regex.Replace(decoded, "<[^>]+>", "")
+        decoded = Regex.Replace(decoded, "[ \t]+", " ")
+        decoded = Regex.Replace(decoded, "(\r?\n\s*){3,}", Environment.NewLine & Environment.NewLine)
+        Return decoded.Trim()
+    End Function
+
+    Private Function CatalogIdentifierLabels(item As Dictionary(Of String, Object)) As List(Of String)
+        Dim labels As New List(Of String)()
+        For Each groupObject In ListValue(GetValue(item, "identifiers"))
+            Dim group = AsDict(groupObject)
+            For Each identifierObject In ListValue(GetValue(group, "identifiers"))
+                Dim identifier = AsDict(identifierObject)
+                Dim kind = StringValue(GetValue(identifier, "identifierType"))
+                Dim value = StringValue(GetValue(identifier, "identifier"))
+                If kind <> "" AndAlso value <> "" Then labels.Add(kind.ToUpperInvariant() & " · " & value)
+            Next
+        Next
+        Return labels.Distinct(StringComparer.OrdinalIgnoreCase).ToList()
+    End Function
+
+    Private Function CatalogCoverageText(item As Dictionary(Of String, Object)) As String
+        Dim groups = New Tuple(Of String, String)() {
+            Tuple.Create("Attributes", "attributes"),
+            Tuple.Create("Classifications", "classifications"),
+            Tuple.Create("Dimensions", "dimensions"),
+            Tuple.Create("Identifiers", "identifiers"),
+            Tuple.Create("Images", "images"),
+            Tuple.Create("Product types", "productTypes"),
+            Tuple.Create("Relationships", "relationships"),
+            Tuple.Create("Sales ranks", "salesRanks"),
+            Tuple.Create("Summaries", "summaries"),
+            Tuple.Create("Vendor details", "vendorDetails")
+        }
+        Dim returned = groups.Where(Function(group) HasCatalogContent(GetValue(item, group.Item2))).ToList()
+        Return returned.Count.ToString(CultureInfo.InvariantCulture) & "/" & groups.Length.ToString(CultureInfo.InvariantCulture) & " data groups returned" &
+               If(returned.Count = 0, "", Environment.NewLine & String.Join(" · ", returned.Select(Function(group) group.Item1)))
+    End Function
+
+    Private Sub RenderCatalogProductSections(item As Dictionary(Of String, Object))
+        catalogSectionsPanel.SuspendLayout()
+        catalogSectionsPanel.Controls.Clear()
+        Dim pageWidth = Math.Max(620, viewSplit.Panel2.ClientSize.Width - 54)
+        catalogSectionsPanel.Width = pageWidth + catalogSectionsPanel.Padding.Horizontal
+
+        Dim summary = FirstDictionary(item, "summaries")
+        Dim productRows As New List(Of KeyValuePair(Of String, String)) From {
+            New KeyValuePair(Of String, String)("Colour", StringValue(GetValue(summary, "color"))),
+            New KeyValuePair(Of String, String)("Item classification", FriendlyToken(StringValue(GetValue(summary, "itemClassification")))),
+            New KeyValuePair(Of String, String)("Manufacturer", StringValue(GetValue(summary, "manufacturer"))),
+            New KeyValuePair(Of String, String)("Model number", StringValue(GetValue(summary, "modelNumber"))),
+            New KeyValuePair(Of String, String)("Package quantity", ViewValue(GetValue(summary, "packageQuantity"))),
+            New KeyValuePair(Of String, String)("Part number", StringValue(GetValue(summary, "partNumber"))),
+            New KeyValuePair(Of String, String)("Size", StringValue(GetValue(summary, "size"))),
+            New KeyValuePair(Of String, String)("Style", StringValue(GetValue(summary, "style"))),
+            New KeyValuePair(Of String, String)("Display group code", StringValue(GetValue(summary, "websiteDisplayGroup"))),
+            New KeyValuePair(Of String, String)("Display group", StringValue(GetValue(summary, "websiteDisplayGroupName")))
+        }
+        productRows = productRows.Where(Function(row) Not String.IsNullOrWhiteSpace(row.Value)).ToList()
+        Dim productCard = CreateProductSection("Product details", productRows.Count, pageWidth)
+        For Each row In productRows : AddProductPageRow(productCard, row.Key, row.Value) : Next
+        AddProductSectionCard(productCard)
+
+        Dim attributes = AsDict(GetValue(item, "attributes"))
+        Dim specificationKeys = attributes.Keys.Where(Function(key) Not {"item_name", "brand", "manufacturer", "model_number", "part_number", "product_description", "bullet_point", "special_feature", "special_features"}.Contains(key, StringComparer.OrdinalIgnoreCase)).OrderBy(Function(key) key).ToList()
+        Dim specificationCard = CreateProductSection("Specifications", specificationKeys.Count, pageWidth)
+        If specificationKeys.Count = 0 Then
+            AddProductPageNote(specificationCard, "Amazon did not return product attributes for this product.")
+        Else
+            For Each key In specificationKeys
+                Dim values = CatalogAttributeValues(item, key)
+                If values.Count > 0 Then AddProductPageRow(specificationCard, PrettyFieldPath(key), String.Join(Environment.NewLine, values))
+            Next
+        End If
+        AddProductSectionCard(specificationCard)
+
+        Dim dimensionGroups = ListValue(GetValue(item, "dimensions"))
+        Dim dimensions = If(dimensionGroups.Count > 0, AsDict(dimensionGroups(0)), New Dictionary(Of String, Object)())
+        Dim itemDimensions = AsDict(GetValue(dimensions, "item"))
+        Dim packageDimensions = AsDict(GetValue(dimensions, "package"))
+        Dim measurementCount = itemDimensions.Count + packageDimensions.Count
+        Dim measurementCard = CreateProductSection("Measurements", measurementCount, pageWidth)
+        If itemDimensions.Count > 0 Then
+            AddProductPageSubheading(measurementCard, "Item")
+            AddMeasurementRows(measurementCard, itemDimensions)
+        End If
+        If packageDimensions.Count > 0 Then
+            AddProductPageSubheading(measurementCard, "Package")
+            AddMeasurementRows(measurementCard, packageDimensions)
+        End If
+        If measurementCount = 0 Then AddProductPageNote(measurementCard, "Amazon did not return item or package measurements.")
+        AddProductSectionCard(measurementCard)
+
+        Dim categoryRows = CatalogCategoryRows(item)
+        Dim categoryCard = CreateProductSection("Category and sales rank", categoryRows.Count, pageWidth)
+        For Each row In categoryRows : AddProductPageRow(categoryCard, row.Key, row.Value) : Next
+        If categoryRows.Count = 0 Then AddProductPageNote(categoryCard, "Amazon did not return classification or sales-rank data.")
+        AddProductSectionCard(categoryCard)
+
+        Dim relatedRows = CatalogRelationshipRows(item)
+        Dim relatedCard = CreateProductSection("Related products", relatedRows.Count, pageWidth)
+        For Each row In relatedRows : AddProductPageRow(relatedCard, row.Key, row.Value) : Next
+        If relatedRows.Count = 0 Then AddProductPageNote(relatedCard, "Amazon did not return parent, child, or variation relationships.")
+        AddProductSectionCard(relatedCard)
+
+        Dim vendorRows As New List(Of KeyValuePair(Of String, String))()
+        FlattenViewValue(GetValue(item, "vendorDetails"), "", vendorRows, 0)
+        Dim vendorCard = CreateProductSection("Vendor details", vendorRows.Count, pageWidth)
+        For Each row In vendorRows.Take(80)
+            AddProductPageRow(vendorCard, PrettyFieldPath(row.Key), FriendlyDetailValue(row.Key, row.Value))
+        Next
+        If vendorRows.Count = 0 Then AddProductPageNote(vendorCard, "Amazon did not return vendor details.")
+        AddProductSectionCard(vendorCard)
+
+        Dim rawCard = CreateProductSection("Complete returned data", 0, pageWidth)
+        AddProductPageNote(rawCard, "The complete, unmodified Amazon response remains available in the Raw response tab.")
+        AddProductSectionCard(rawCard)
+
+        catalogSectionsPanel.ResumeLayout(True)
+    End Sub
+
+    Private Function CreateProductSection(title As String, count As Integer, width As Integer) As TableLayoutPanel
+        Dim card As New TableLayoutPanel With {
+            .AutoSize = True,
+            .AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            .ColumnCount = 2,
+            .RowCount = 1,
+            .Width = width,
+            .BackColor = Color.White,
+            .Padding = New Padding(18, 14, 18, 16),
+            .Margin = New Padding(0, 0, 0, 14),
+            .CellBorderStyle = TableLayoutPanelCellBorderStyle.Single
+        }
+        card.ColumnStyles.Add(New ColumnStyle(SizeType.Absolute, 250.0F))
+        card.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, 100.0F))
+        card.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        Dim heading As New Label With {
+            .Text = title & If(count > 0, "   " & count.ToString(CultureInfo.InvariantCulture), ""),
+            .AutoSize = True,
+            .Dock = DockStyle.Fill,
+            .Font = New Font("Bahnschrift SemiBold", 12.0F, FontStyle.Bold),
+            .ForeColor = Color.FromArgb(30, 38, 48),
+            .BackColor = Color.FromArgb(247, 249, 252),
+            .Padding = New Padding(8, 8, 8, 8),
+            .Margin = New Padding(0, 0, 0, 8)
+        }
+        card.Controls.Add(heading, 0, 0)
+        card.SetColumnSpan(heading, 2)
+        Return card
+    End Function
+
+    Private Sub AddProductSectionCard(card As TableLayoutPanel)
+        catalogSectionsPanel.Controls.Add(card)
+    End Sub
+
+    Private Sub AddProductPageRow(card As TableLayoutPanel, field As String, value As String)
+        If String.IsNullOrWhiteSpace(value) Then Return
+        Dim row = card.RowCount
+        card.RowCount += 1
+        card.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        Dim fieldLabel As New Label With {
+            .Text = field,
+            .AutoSize = True,
+            .Dock = DockStyle.Fill,
+            .ForeColor = Color.FromArgb(91, 99, 110),
+            .Font = New Font("Segoe UI Semibold", 9.0F, FontStyle.Bold),
+            .Padding = New Padding(8, 9, 8, 9),
+            .Margin = New Padding(0)
+        }
+        Dim valueLabel As New Label With {
+            .Text = value,
+            .AutoSize = True,
+            .Dock = DockStyle.Fill,
+            .ForeColor = Color.FromArgb(30, 38, 48),
+            .Font = New Font("Segoe UI", 9.0F),
+            .MaximumSize = New Size(Math.Max(300, card.Width - 310), 0),
+            .Padding = New Padding(8, 9, 8, 9),
+            .Margin = New Padding(0)
+        }
+        card.Controls.Add(fieldLabel, 0, row)
+        card.Controls.Add(valueLabel, 1, row)
+    End Sub
+
+    Private Sub AddProductPageSubheading(card As TableLayoutPanel, title As String)
+        Dim row = card.RowCount
+        card.RowCount += 1
+        card.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        Dim label As New Label With {
+            .Text = title.ToUpperInvariant(),
+            .AutoSize = True,
+            .Dock = DockStyle.Fill,
+            .Font = New Font("Segoe UI Semibold", 8.5F, FontStyle.Bold),
+            .ForeColor = Color.FromArgb(37, 99, 235),
+            .BackColor = Color.FromArgb(239, 246, 255),
+            .Padding = New Padding(8, 7, 8, 7),
+            .Margin = New Padding(0)
+        }
+        card.Controls.Add(label, 0, row)
+        card.SetColumnSpan(label, 2)
+    End Sub
+
+    Private Sub AddProductPageNote(card As TableLayoutPanel, text As String)
+        Dim row = card.RowCount
+        card.RowCount += 1
+        card.RowStyles.Add(New RowStyle(SizeType.AutoSize))
+        Dim label As New Label With {
+            .Text = text,
+            .AutoSize = True,
+            .Dock = DockStyle.Fill,
+            .ForeColor = Color.FromArgb(91, 99, 110),
+            .Font = New Font("Segoe UI", 9.0F, FontStyle.Italic),
+            .Padding = New Padding(8, 12, 8, 12),
+            .Margin = New Padding(0)
+        }
+        card.Controls.Add(label, 0, row)
+        card.SetColumnSpan(label, 2)
+    End Sub
+
+    Private Sub AddMeasurementRows(card As TableLayoutPanel, measurements As Dictionary(Of String, Object))
+        For Each pair In measurements.OrderBy(Function(entry) entry.Key)
+            Dim measurement = AsDict(pair.Value)
+            Dim value = ViewValue(GetValue(measurement, "value"))
+            Dim unit = FriendlyToken(StringValue(GetValue(measurement, "unit")))
+            AddProductPageRow(card, PrettyFieldPath(pair.Key), String.Join(" ", New String() {value, unit}.Where(Function(part) part <> "")))
+        Next
+    End Sub
+
+    Private Function CatalogCategoryRows(item As Dictionary(Of String, Object)) As List(Of KeyValuePair(Of String, String))
+        Dim rows As New List(Of KeyValuePair(Of String, String))()
+        Dim summary = FirstDictionary(item, "summaries")
+        Dim browse = AsDict(GetValue(summary, "browseClassification"))
+        Dim browseName = StringValue(GetValue(browse, "displayName"))
+        Dim browseId = StringValue(GetValue(browse, "classificationId"))
+        If browseName <> "" Then rows.Add(New KeyValuePair(Of String, String)("Browse path", browseName & If(browseId = "", "", " (" & browseId & ")")))
+
+        For Each groupObject In ListValue(GetValue(item, "salesRanks"))
+            Dim group = AsDict(groupObject)
+            For Each rankObject In ListValue(GetValue(group, "classificationRanks"))
+                Dim rank = AsDict(rankObject)
+                rows.Add(New KeyValuePair(Of String, String)(FirstNonEmpty(StringValue(GetValue(rank, "title")), "Classification"), "#" & ViewValue(GetValue(rank, "rank"))))
+            Next
+            For Each rankObject In ListValue(GetValue(group, "displayGroupRanks"))
+                Dim rank = AsDict(rankObject)
+                rows.Add(New KeyValuePair(Of String, String)(FirstNonEmpty(StringValue(GetValue(rank, "title")), "Display group"), "#" & ViewValue(GetValue(rank, "rank"))))
+            Next
+        Next
+        Return rows
+    End Function
+
+    Private Function CatalogRelationshipRows(item As Dictionary(Of String, Object)) As List(Of KeyValuePair(Of String, String))
+        Dim rows As New List(Of KeyValuePair(Of String, String))()
+        For Each groupObject In ListValue(GetValue(item, "relationships"))
+            Dim group = AsDict(groupObject)
+            For Each relationObject In ListValue(GetValue(group, "relationships"))
+                Dim relation = AsDict(relationObject)
+                Dim relationshipType = FriendlyToken(StringValue(GetValue(relation, "type")))
+                Dim theme = AsDict(GetValue(relation, "variationTheme"))
+                Dim themeText = FriendlyList(GetValue(theme, "attributes"))
+                Dim parents = ListValue(GetValue(relation, "parentAsins")).Select(Function(value) ViewValue(value)).Where(Function(value) value <> "").ToList()
+                Dim children = ListValue(GetValue(relation, "childAsins")).Select(Function(value) ViewValue(value)).Where(Function(value) value <> "").ToList()
+                If parents.Count > 0 Then rows.Add(New KeyValuePair(Of String, String)(FirstNonEmpty(relationshipType, "Parent"), String.Join(", ", parents) & If(themeText = "", "", " · " & themeText)))
+                If children.Count > 0 Then rows.Add(New KeyValuePair(Of String, String)(FirstNonEmpty(relationshipType, "Children"), String.Join(", ", children) & If(themeText = "", "", " · " & themeText)))
+            Next
+        Next
+        Return rows
+    End Function
+
+    Private Sub RenderCatalogDetailSections(item As Dictionary(Of String, Object))
+        For Each grid In New DataGridView() {catalogOverviewGrid, catalogSpecificationsGrid, catalogRelatedGrid, catalogAllFieldsGrid}
+            grid.Rows.Clear()
+        Next
+
+        Dim summary = FirstDictionary(item, "summaries")
+        Dim productType = FirstDictionary(item, "productTypes")
+        AddCatalogSection(catalogOverviewGrid, "Product identity")
+        AddCatalogValue(catalogOverviewGrid, "ASIN", StringValue(GetValue(item, "asin")))
+        AddCatalogValue(catalogOverviewGrid, "Title", FirstNonEmpty(CatalogTitle(item), FirstCatalogAttribute(item, "item_name")))
+        AddCatalogValue(catalogOverviewGrid, "Brand", FirstNonEmpty(StringValue(GetValue(summary, "brand")), FirstCatalogAttribute(item, "brand")))
+        AddCatalogValue(catalogOverviewGrid, "Manufacturer", FirstNonEmpty(StringValue(GetValue(summary, "manufacturer")), FirstCatalogAttribute(item, "manufacturer")))
+        AddCatalogValue(catalogOverviewGrid, "Model number", FirstNonEmpty(StringValue(GetValue(summary, "modelNumber")), FirstCatalogAttribute(item, "model_number")))
+        AddCatalogValue(catalogOverviewGrid, "Part number", FirstNonEmpty(StringValue(GetValue(summary, "partNumber")), FirstCatalogAttribute(item, "part_number")))
+        AddCatalogValue(catalogOverviewGrid, "Product type", FriendlyToken(StringValue(GetValue(productType, "productType"))))
+        AddCatalogValue(catalogOverviewGrid, "Marketplace", StringValue(GetValue(summary, "marketplaceId")))
+        AddCatalogValue(catalogOverviewGrid, "Package quantity", ViewValue(GetValue(summary, "packageQuantity")))
+
+        Dim description = CatalogDescription(item)
+        If description <> "" Then
+            AddCatalogSection(catalogOverviewGrid, "Description and highlights")
+            AddCatalogValue(catalogOverviewGrid, "Product description", description)
+        End If
+        If HasCatalogContent(GetValue(item, "identifiers")) Then
+            AddCatalogSection(catalogOverviewGrid, "Identifiers")
+            AddCatalogObjectRows(catalogOverviewGrid, GetValue(item, "identifiers"), "", 80)
+        End If
+        If CatalogImageUrls.Count > 0 Then
+            AddCatalogSection(catalogOverviewGrid, "Media")
+            AddCatalogValue(catalogOverviewGrid, "Product images", CatalogImageUrls.Count.ToString(CultureInfo.InvariantCulture) & " image(s) returned by Amazon")
+        End If
+
+        Dim attributes = AsDict(GetValue(item, "attributes"))
+        Dim descriptiveKeys As New HashSet(Of String)({"item_name", "brand", "manufacturer", "model_number", "part_number", "product_description", "bullet_point", "special_feature", "special_features"}, StringComparer.OrdinalIgnoreCase)
+        If attributes.Count > 0 Then
+            AddCatalogSection(catalogSpecificationsGrid, "Product specifications")
+            For Each pair In attributes.OrderBy(Function(entry) entry.Key)
+                If descriptiveKeys.Contains(pair.Key) Then Continue For
+                Dim values = CatalogAttributeValues(item, pair.Key)
+                If values.Count > 0 Then
+                    AddCatalogValue(catalogSpecificationsGrid, PrettyFieldPath(pair.Key), String.Join(Environment.NewLine, values))
+                Else
+                    AddCatalogObjectRows(catalogSpecificationsGrid, pair.Value, pair.Key, 40)
+                End If
+            Next
+        End If
+        If HasCatalogContent(GetValue(item, "dimensions")) Then
+            AddCatalogSection(catalogSpecificationsGrid, "Measurements")
+            AddCatalogObjectRows(catalogSpecificationsGrid, GetValue(item, "dimensions"), "", 100)
+        End If
+        If catalogSpecificationsGrid.Rows.Count = 0 Then AddCatalogValue(catalogSpecificationsGrid, "Specifications", "Amazon returned no specification attributes for this product.")
+
+        AddCatalogSectionIfPresent(catalogRelatedGrid, "Classification", GetValue(item, "classifications"), 100)
+        AddCatalogSectionIfPresent(catalogRelatedGrid, "Category and sales rank", GetValue(item, "salesRanks"), 120)
+        AddCatalogSectionIfPresent(catalogRelatedGrid, "Related products and variations", GetValue(item, "relationships"), 120)
+        AddCatalogSectionIfPresent(catalogRelatedGrid, "Vendor details", GetValue(item, "vendorDetails"), 120)
+        If catalogRelatedGrid.Rows.Count = 0 Then AddCatalogValue(catalogRelatedGrid, "Related data", "Amazon returned no classification, sales-rank, relationship, or vendor records.")
+
+        AddCatalogSection(catalogAllFieldsGrid, "Complete Amazon SP-API response")
+        AddCatalogObjectRows(catalogAllFieldsGrid, item, "", 1000)
+        For Each grid In New DataGridView() {catalogOverviewGrid, catalogSpecificationsGrid, catalogRelatedGrid, catalogAllFieldsGrid}
+            If grid.Rows.Count > 0 Then grid.ClearSelection()
+        Next
+    End Sub
+
+    Private Sub AddCatalogSectionIfPresent(grid As DataGridView, title As String, value As Object, maxRows As Integer)
+        If Not HasCatalogContent(value) Then Return
+        AddCatalogSection(grid, title)
+        AddCatalogObjectRows(grid, value, "", maxRows)
+    End Sub
+
+    Private Function HasCatalogContent(value As Object) As Boolean
+        If value Is Nothing Then Return False
+        Dim dict = TryCast(value, Dictionary(Of String, Object))
+        If dict IsNot Nothing Then Return dict.Count > 0
+        If TypeOf value Is Object() OrElse TypeOf value Is ArrayList OrElse TypeOf value Is IEnumerable(Of Object) Then Return ListValue(value).Count > 0
+        Return Not String.IsNullOrWhiteSpace(ViewValue(value))
+    End Function
+
+    Private Sub AddCatalogSection(grid As DataGridView, title As String)
+        Dim index = grid.Rows.Add(title.ToUpperInvariant(), "")
+        Dim row = grid.Rows(index)
+        row.Height = 36
+        row.ReadOnly = True
+        row.DefaultCellStyle.BackColor = Color.FromArgb(235, 241, 255)
+        row.DefaultCellStyle.ForeColor = Color.FromArgb(30, 64, 175)
+        row.DefaultCellStyle.Font = New Font("Segoe UI Semibold", 9.0F, FontStyle.Bold)
+        row.DefaultCellStyle.SelectionBackColor = Color.FromArgb(235, 241, 255)
+        row.DefaultCellStyle.SelectionForeColor = Color.FromArgb(30, 64, 175)
+    End Sub
+
+    Private Sub AddCatalogValue(grid As DataGridView, field As String, value As String)
+        If String.IsNullOrWhiteSpace(value) Then Return
+        grid.Rows.Add(field, value)
+    End Sub
+
+    Private Sub AddCatalogObjectRows(grid As DataGridView, value As Object, prefix As String, maxRows As Integer)
+        Dim rows As New List(Of KeyValuePair(Of String, String))()
+        FlattenViewValue(value, prefix, rows, 0)
+        For Each row In rows.Take(maxRows)
+            AddCatalogValue(grid, PrettyFieldPath(row.Key), FriendlyDetailValue(row.Key, row.Value))
+        Next
+        If rows.Count > maxRows Then AddCatalogValue(grid, "More fields", (rows.Count - maxRows).ToString(CultureInfo.InvariantCulture) & " additional field(s) remain available in All SP-API fields and Raw response.")
     End Sub
 
     Private Sub RenderFeesView(data As Dictionary(Of String, Object))
@@ -2310,8 +3284,12 @@ Public Partial Class MainForm
         If viewGrid.SelectedRows.Count = 0 Then Return
         Dim source = viewGrid.SelectedRows(0).Tag
         If source Is Nothing Then Return
-        lblViewDetails.Text = "Selected record details"
-        RenderDetailsFromObject(source)
+        If CurrentViewOperation = "catalog" Then
+            RenderCatalogProductDetail(AsDict(source))
+        Else
+            lblViewDetails.Text = "Selected record details"
+            RenderDetailsFromObject(source)
+        End If
     End Sub
 
     Private Sub ViewGridDoubleClick(sender As Object, e As DataGridViewCellEventArgs)
@@ -2330,14 +3308,14 @@ Public Partial Class MainForm
             AddViewDetail("Result", "No additional fields returned.")
             Return
         End If
-        For Each row In rows.Take(250)
+        For Each row In rows.Take(1000)
             AddViewDetail(PrettyFieldPath(row.Key), FriendlyDetailValue(row.Key, row.Value))
         Next
-        If rows.Count > 250 Then AddViewDetail("More fields", (rows.Count - 250).ToString(CultureInfo.InvariantCulture) & " additional fields are available in Raw response.")
+        If rows.Count > 1000 Then AddViewDetail("More fields", (rows.Count - 1000).ToString(CultureInfo.InvariantCulture) & " additional fields are available in Raw response.")
     End Sub
 
     Private Sub FlattenViewValue(value As Object, path As String, rows As List(Of KeyValuePair(Of String, String)), depth As Integer)
-        If rows.Count > 350 OrElse depth > 8 Then Return
+        If rows.Count > 1400 OrElse depth > 10 Then Return
 
         If value Is Nothing Then
             If path <> "" Then rows.Add(New KeyValuePair(Of String, String)(path, ""))
@@ -2367,10 +3345,10 @@ Public Partial Class MainForm
                 Return
             End If
 
-            For i As Integer = 0 To Math.Min(list.Count, 25) - 1
+            For i As Integer = 0 To Math.Min(list.Count, 100) - 1
                 FlattenViewValue(list(i), path & "[" & (i + 1).ToString(CultureInfo.InvariantCulture) & "]", rows, depth + 1)
             Next
-            If list.Count > 25 Then rows.Add(New KeyValuePair(Of String, String)(path & ".more", (list.Count - 25).ToString(CultureInfo.InvariantCulture) & " more item(s)"))
+            If list.Count > 100 Then rows.Add(New KeyValuePair(Of String, String)(path & ".more", (list.Count - 100).ToString(CultureInfo.InvariantCulture) & " more item(s)"))
             Return
         End If
 
@@ -2575,6 +3553,7 @@ Public Partial Class MainForm
         ConfigureReturnedRecords(operation, result)
         ConfigureNextStep(operation, result)
         tabs.SelectedIndex = 0
+        If operation <> "connection" Then ShowResultWorkspace()
     End Sub
 
     Private Function BuildSummary(operation As String, result As ApiResult) As String
