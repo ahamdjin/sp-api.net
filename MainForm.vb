@@ -2665,8 +2665,7 @@ Public Partial Class MainForm
         End Select
         Dim nextStep = StringValue(GetValue(data, "nextStep"))
         If nextStep <> "" Then sb.AppendLine().AppendLine("Next: " & nextStep)
-        sb.AppendLine().AppendLine("Complete returned data:").AppendLine(PrettyJson(result.Data))
-        Return sb.ToString()
+        Return sb.ToString().TrimEnd()
     End Function
 
     Private Function CatalogTitle(item As Dictionary(Of String, Object)) As String
