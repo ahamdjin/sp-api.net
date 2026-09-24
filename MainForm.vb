@@ -361,12 +361,26 @@ Public Partial Class MainForm
                 {"orders", New Object() {
                     New Dictionary(Of String, Object) From {
                         {"orderId", "ORDER-VIEW-1"},
-                        {"orderStatus", "SHIPPED"},
-                        {"purchaseDate", "2026-09-24T10:00:00Z"}
+                        {"createdTime", "2026-09-24T10:00:00Z"},
+                        {"salesChannel", "Amazon.com"},
+                        {"fulfillment", New Dictionary(Of String, Object) From {
+                            {"fulfillmentStatus", "SHIPPED"},
+                            {"fulfilledBy", "AMAZON"}
+                        }},
+                        {"proceeds", New Dictionary(Of String, Object) From {
+                            {"grandTotal", New Dictionary(Of String, Object) From {
+                                {"currencyCode", "USD"},
+                                {"amount", "25.50"}
+                            }}
+                        }}
                     },
                     New Dictionary(Of String, Object) From {
                         {"orderId", "ORDER-VIEW-2"},
-                        {"orderStatus", "UNSHIPPED"}
+                        {"createdTime", "2026-09-24T11:00:00Z"},
+                        {"fulfillment", New Dictionary(Of String, Object) From {
+                            {"fulfillmentStatus", "UNSHIPPED"},
+                            {"fulfilledBy", "MERCHANT"}
+                        }}
                     }
                 }}
             }
@@ -374,6 +388,7 @@ Public Partial Class MainForm
         RenderResultView("orders", ordersViewResult)
         If viewGrid.Rows.Count <> 2 Then Throw New InvalidOperationException("Orders View did not render every returned order.")
         If Convert.ToString(viewGrid.Rows(0).Cells(0).Value, CultureInfo.InvariantCulture) <> "ORDER-VIEW-1" Then Throw New InvalidOperationException("Orders View did not show the order ID.")
+        If Convert.ToString(viewGrid.Rows(0).Cells(5).Value, CultureInfo.InvariantCulture) <> "USD 25.50" Then Throw New InvalidOperationException("Orders View did not show the Orders 2026 grand total.")
 
         Dim viewFailure As New ApiResult With {
             .Ok = False,
@@ -1638,43 +1653,43 @@ Public Partial Class MainForm
                     RenderInboundPlanView(data)
 
                 Case "prepDetails"
-                    RenderGenericListView("Prep details", "Amazon preparation requirements", FirstList(data, "mskuPrepDetails", "prepDetails", "items"), data)
+                    RenderPrepDetailsView(data)
 
                 Case "reportDocument", "feedDocument"
-                    RenderObjectView(If(operation = "reportDocument", "Report document", "Feed processing report"), "Document metadata and downloaded preview information", data)
+                    RenderDocumentView(If(operation = "reportDocument", "Report document", "Feed processing report"), data)
 
                 Case "itemLabels"
-                    RenderGenericListView("Item labels", "Returned label documents", FirstList(data, "documentDownloads", "documents"), data)
+                    RenderLabelDocumentsView(data)
 
                 Case "shipmentLabels"
-                    RenderObjectView("Shipment labels", "Amazon shipment-label response", data)
+                    RenderDocumentView("Shipment labels", data)
 
                 Case "billOfLading"
-                    RenderObjectView("Bill of lading", "Amazon bill-of-lading response", data)
+                    RenderDocumentView("Bill of lading", data)
 
                 Case "order"
-                    RenderObjectView("Order", "Amazon order details", data)
+                    RenderOrderView(data)
 
                 Case "inboundShipment"
-                    RenderObjectView("Inbound shipment", "Shipment details", data)
+                    RenderInboundShipmentView(data)
 
                 Case "report"
-                    RenderObjectView("Report status", "Current Amazon report job state", data)
+                    RenderReportStatusView("Report status", data)
 
                 Case "feed"
-                    RenderObjectView("Feed status", "Current Amazon feed job state", data)
+                    RenderFeedStatusView("Feed status", data)
 
                 Case "createReport"
-                    RenderObjectView("Report requested", "Amazon accepted the report request", data)
+                    RenderReportStatusView("Report requested", data)
 
                 Case "submitFeed"
-                    RenderObjectView("Feed submitted", "Amazon accepted the feed workflow", data)
+                    RenderFeedStatusView("Feed submitted", data)
 
                 Case "createInboundPlan"
-                    RenderObjectView("Inbound plan requested", "Amazon accepted the inbound-plan workflow", data)
+                    RenderInboundOperationView("Inbound plan requested", data)
 
                 Case "inboundOperationStatus"
-                    RenderObjectView("Inbound operation status", "Current asynchronous operation state", data)
+                    RenderInboundOperationView("Inbound operation status", data)
 
                 Case Else
                     RenderObjectView(Operations.Where(Function(op) op.Id = operation).Select(Function(op) op.Label).FirstOrDefault(), "Returned Amazon data", data)
@@ -1782,18 +1797,25 @@ Public Partial Class MainForm
         End If
 
         ConfigureViewTable(
-            Tuple.Create("Seller SKU", 24),
-            Tuple.Create("ASIN", 18),
-            Tuple.Create("FNSKU", 18),
-            Tuple.Create("Condition", 18),
-            Tuple.Create("Total", 12))
+            Tuple.Create("Product", 28),
+            Tuple.Create("Seller SKU", 18),
+            Tuple.Create("ASIN", 15),
+            Tuple.Create("Fulfillable", 12),
+            Tuple.Create("Reserved", 12),
+            Tuple.Create("Unfulfillable", 12),
+            Tuple.Create("Total", 11))
         For Each raw In records
             Dim record = AsDict(raw)
+            Dim details = AsDict(GetValue(record, "inventoryDetails"))
+            Dim reserved = AsDict(GetValue(details, "reservedQuantity"))
+            Dim unfulfillable = AsDict(GetValue(details, "unfulfillableQuantity"))
             AddViewRow(record,
+                       FirstNonEmpty(StringValue(GetValue(record, "productName")), StringValue(GetValue(record, "sellerSku"))),
                        StringValue(GetValue(record, "sellerSku")),
                        StringValue(GetValue(record, "asin")),
-                       FirstNonEmpty(StringValue(GetValue(record, "fnSku")), StringValue(GetValue(record, "fnsku"))),
-                       StringValue(GetValue(record, "condition")),
+                       ViewValue(GetValue(details, "fulfillableQuantity")),
+                       ViewValue(GetValue(reserved, "totalReservedQuantity")),
+                       ViewValue(GetValue(unfulfillable, "totalUnfulfillableQuantity")),
                        ViewValue(GetValue(record, "totalQuantity")))
         Next
         viewSplit.Panel1Collapsed = False
@@ -1811,23 +1833,26 @@ Public Partial Class MainForm
         End If
 
         ConfigureViewTable(
-            Tuple.Create("Order ID", 25),
+            Tuple.Create("Order ID", 24),
             Tuple.Create("Status", 18),
-            Tuple.Create("Purchase date", 21),
-            Tuple.Create("Fulfilled by", 15),
-            Tuple.Create("Channel", 15),
-            Tuple.Create("Total", 16))
+            Tuple.Create("Created", 20),
+            Tuple.Create("Fulfilled by", 14),
+            Tuple.Create("Sales channel", 16),
+            Tuple.Create("Total", 14))
         For Each raw In records
             Dim record = AsDict(raw)
             Dim fulfillment = AsDict(GetValue(record, "fulfillment"))
-            Dim total = AsDict(GetValue(record, "orderTotal"))
+            Dim proceeds = AsDict(GetValue(record, "proceeds"))
+            Dim total = AsDict(GetValue(proceeds, "grandTotal"))
+            Dim status = StringValue(GetValue(fulfillment, "fulfillmentStatus"))
             AddViewRow(record,
-                       FirstNonEmpty(StringValue(GetValue(record, "orderId")), StringValue(GetValue(record, "amazonOrderId"))),
-                       FirstNonEmpty(StringValue(GetValue(fulfillment, "fulfillmentStatus")), StringValue(GetValue(record, "orderStatus"))),
-                       FirstNonEmpty(StringValue(GetValue(record, "purchaseDate")), StringValue(GetValue(record, "createdAt"))),
-                       FirstNonEmpty(StringValue(GetValue(record, "fulfilledBy")), StringValue(GetValue(fulfillment, "fulfilledBy"))),
-                       FirstNonEmpty(StringValue(GetValue(record, "salesChannel")), StringValue(GetValue(record, "marketplaceId"))),
+                       StringValue(GetValue(record, "orderId")),
+                       FriendlyToken(status),
+                       DisplayDate(GetValue(record, "createdTime")),
+                       FriendlyToken(StringValue(GetValue(fulfillment, "fulfilledBy"))),
+                       StringValue(GetValue(record, "salesChannel")),
                        MoneyText(total))
+            ApplyStatusStyle(viewGrid.Rows(viewGrid.Rows.Count - 1), status)
         Next
         viewSplit.Panel1Collapsed = False
     End Sub
@@ -1849,9 +1874,10 @@ Public Partial Class MainForm
             AddViewRow(record,
                        StringValue(GetValue(record, "reportId")),
                        StringValue(GetValue(record, "reportType")),
-                       StringValue(GetValue(record, "processingStatus")),
-                       StringValue(GetValue(record, "createdTime")),
+                       FriendlyToken(StringValue(GetValue(record, "processingStatus"))),
+                       DisplayDate(GetValue(record, "createdTime")),
                        StringValue(GetValue(record, "reportDocumentId")))
+            ApplyStatusStyle(viewGrid.Rows(viewGrid.Rows.Count - 1), StringValue(GetValue(record, "processingStatus")))
         Next
         viewSplit.Panel1Collapsed = False
     End Sub
@@ -1876,6 +1902,7 @@ Public Partial Class MainForm
                        StringValue(GetValue(record, "processingStatus")),
                        StringValue(GetValue(record, "createdTime")),
                        StringValue(GetValue(record, "resultFeedDocumentId")))
+            ApplyStatusStyle(viewGrid.Rows(viewGrid.Rows.Count - 1), StringValue(GetValue(record, "processingStatus")))
         Next
         viewSplit.Panel1Collapsed = False
     End Sub
@@ -1897,9 +1924,10 @@ Public Partial Class MainForm
             AddViewRow(record,
                        StringValue(GetValue(record, "inboundPlanId")),
                        StringValue(GetValue(record, "name")),
-                       StringValue(GetValue(record, "status")),
-                       FirstNonEmpty(StringValue(GetValue(record, "createdAt")), StringValue(GetValue(record, "createdTime"))),
-                       FirstNonEmpty(StringValue(GetValue(record, "lastUpdatedAt")), StringValue(GetValue(record, "lastUpdatedTime"))))
+                       FriendlyToken(StringValue(GetValue(record, "status"))),
+                       DisplayDate(FirstNonEmpty(StringValue(GetValue(record, "createdAt")), StringValue(GetValue(record, "createdTime")))),
+                       DisplayDate(FirstNonEmpty(StringValue(GetValue(record, "lastUpdatedAt")), StringValue(GetValue(record, "lastUpdatedTime")))))
+            ApplyStatusStyle(viewGrid.Rows(viewGrid.Rows.Count - 1), StringValue(GetValue(record, "status")))
         Next
         viewSplit.Panel1Collapsed = False
     End Sub
@@ -1930,6 +1958,223 @@ Public Partial Class MainForm
                        FirstNonEmpty(StringValue(GetValue(destination, "warehouseId")), StringValue(GetValue(shipment, "destinationType"))))
         Next
         viewSplit.Panel1Collapsed = False
+    End Sub
+
+    Private Sub RenderOrderView(data As Dictionary(Of String, Object))
+        Dim orderId = StringValue(GetValue(data, "orderId"))
+        Dim fulfillment = AsDict(GetValue(data, "fulfillment"))
+        Dim status = StringValue(GetValue(fulfillment, "fulfillmentStatus"))
+        Dim proceeds = AsDict(GetValue(data, "proceeds"))
+        Dim total = AsDict(GetValue(proceeds, "grandTotal"))
+        Dim items = ListValue(GetValue(data, "orderItems"))
+
+        lblViewTitle.Text = If(orderId = "", "Order", "Order " & orderId)
+        lblViewSubtitle.Text = String.Join(" · ", New String() {
+            FriendlyToken(status),
+            DisplayDate(GetValue(data, "createdTime")),
+            MoneyText(total)
+        }.Where(Function(value) value <> ""))
+
+        If items.Count = 0 Then
+            viewSplit.Panel1Collapsed = True
+            RenderDetailsFromObject(data)
+            Return
+        End If
+
+        ConfigureViewTable(
+            Tuple.Create("ASIN", 17),
+            Tuple.Create("Seller SKU", 19),
+            Tuple.Create("Product", 35),
+            Tuple.Create("Qty", 9),
+            Tuple.Create("Price", 14))
+        For Each raw In items
+            Dim item = AsDict(raw)
+            Dim product = AsDict(GetValue(item, "product"))
+            AddViewRow(item,
+                       StringValue(GetValue(product, "asin")),
+                       StringValue(GetValue(product, "sellerSku")),
+                       StringValue(GetValue(product, "title")),
+                       ViewValue(GetValue(item, "quantityOrdered")),
+                       MoneyText(AsDict(GetValue(product, "price"))))
+        Next
+        viewSplit.Panel1Collapsed = False
+    End Sub
+
+    Private Sub RenderPrepDetailsView(data As Dictionary(Of String, Object))
+        Dim records = FirstList(data, "mskuPrepDetails", "prepDetails", "items")
+        lblViewTitle.Text = "Prep details"
+        lblViewSubtitle.Text = records.Count.ToString(CultureInfo.InvariantCulture) & " SKU preparation record(s)"
+
+        If records.Count = 0 Then
+            viewSplit.Panel1Collapsed = True
+            RenderDetailsFromObject(data)
+            Return
+        End If
+
+        ConfigureViewTable(
+            Tuple.Create("MSKU", 22),
+            Tuple.Create("Category", 24),
+            Tuple.Create("Prep types", 36),
+            Tuple.Create("Prep owner", 18),
+            Tuple.Create("Label owner", 18))
+        For Each raw In records
+            Dim record = AsDict(raw)
+            AddViewRow(record,
+                       StringValue(GetValue(record, "msku")),
+                       FriendlyToken(StringValue(GetValue(record, "prepCategory"))),
+                       FriendlyList(GetValue(record, "prepTypes")),
+                       FriendlyList(GetValue(record, "prepOwnerConstraint")),
+                       FriendlyList(GetValue(record, "labelOwnerConstraint")))
+        Next
+        viewSplit.Panel1Collapsed = False
+    End Sub
+
+    Private Sub RenderLabelDocumentsView(data As Dictionary(Of String, Object))
+        Dim records = FirstList(data, "documentDownloads", "documents")
+        lblViewTitle.Text = "Item labels"
+        lblViewSubtitle.Text = If(records.Count = 0, "No label documents returned", records.Count.ToString(CultureInfo.InvariantCulture) & " label document(s) returned")
+
+        If records.Count = 0 Then
+            viewSplit.Panel1Collapsed = True
+            RenderDetailsFromObject(data)
+            Return
+        End If
+
+        ConfigureViewTable(
+            Tuple.Create("Type", 24),
+            Tuple.Create("Expires", 26),
+            Tuple.Create("Download", 50))
+        For Each raw In records
+            Dim record = AsDict(raw)
+            AddViewRow(record,
+                       FriendlyToken(StringValue(GetValue(record, "downloadType"))),
+                       DisplayDate(GetValue(record, "expiration")),
+                       ShortUrl(StringValue(GetValue(record, "uri"))))
+        Next
+        viewSplit.Panel1Collapsed = False
+    End Sub
+
+    Private Sub RenderDocumentView(title As String, data As Dictionary(Of String, Object))
+        lblViewTitle.Text = title
+        Dim documents = FindDocumentUrls(data)
+        lblViewSubtitle.Text = If(documents.Count = 0, "Document metadata returned", documents.Count.ToString(CultureInfo.InvariantCulture) & " downloadable document(s) returned")
+        viewSplit.Panel1Collapsed = True
+
+        AddViewDetail("Document ID", FirstNonEmpty(StringValue(GetValue(data, "reportDocumentId")), StringValue(GetValue(data, "feedDocumentId"))))
+        AddViewDetail("Compression", FriendlyToken(StringValue(GetValue(data, "compressionAlgorithm"))))
+        AddViewDetail("Download URL", ShortUrl(StringValue(GetValue(data, "url"))))
+
+        Dim downloaded = AsDict(GetValue(data, "downloaded"))
+        If downloaded.Count > 0 Then
+            AddViewDetail("Content type", StringValue(GetValue(downloaded, "contentType")))
+            AddViewDetail("Bytes read", ViewValue(GetValue(downloaded, "bytesRead")))
+            AddViewDetail("Preview truncated", ViewValue(GetValue(downloaded, "truncated")))
+            AddViewDetail("Preview error", StringValue(GetValue(downloaded, "error")))
+            Dim preview = StringValue(GetValue(downloaded, "content"))
+            If preview <> "" Then AddViewDetail("Text preview", preview)
+        End If
+
+        If viewDetails.Rows.Count = 0 Then RenderDetailsFromObject(data)
+    End Sub
+
+    Private Sub RenderReportStatusView(title As String, data As Dictionary(Of String, Object))
+        Dim reportId = StringValue(GetValue(data, "reportId"))
+        Dim status = StringValue(GetValue(data, "processingStatus"))
+        lblViewTitle.Text = title
+        lblViewSubtitle.Text = String.Join(" · ", New String() {
+            FriendlyToken(status),
+            If(reportId = "", "", "Report " & reportId)
+        }.Where(Function(value) value <> ""))
+        viewSplit.Panel1Collapsed = True
+
+        AddViewDetail("Report ID", reportId)
+        AddViewDetail("Report type", StringValue(GetValue(data, "reportType")))
+        AddViewDetail("Status", FriendlyToken(status))
+        AddViewDetail("Created", DisplayDate(GetValue(data, "createdTime")))
+        AddViewDetail("Processing started", DisplayDate(GetValue(data, "processingStartTime")))
+        AddViewDetail("Processing ended", DisplayDate(GetValue(data, "processingEndTime")))
+        AddViewDetail("Report document ID", StringValue(GetValue(data, "reportDocumentId")))
+        AddViewDetail("Next step", StringValue(GetValue(data, "nextStep")))
+        RemoveBlankViewDetails()
+    End Sub
+
+    Private Sub RenderFeedStatusView(title As String, data As Dictionary(Of String, Object))
+        Dim feedId = StringValue(GetValue(data, "feedId"))
+        Dim status = StringValue(GetValue(data, "processingStatus"))
+        lblViewTitle.Text = title
+        lblViewSubtitle.Text = String.Join(" · ", New String() {
+            FriendlyToken(status),
+            If(feedId = "", "", "Feed " & feedId)
+        }.Where(Function(value) value <> ""))
+        viewSplit.Panel1Collapsed = True
+
+        AddViewDetail("Feed ID", feedId)
+        AddViewDetail("Feed type", StringValue(GetValue(data, "feedType")))
+        AddViewDetail("Status", FriendlyToken(status))
+        AddViewDetail("Created", DisplayDate(GetValue(data, "createdTime")))
+        AddViewDetail("Processing started", DisplayDate(GetValue(data, "processingStartTime")))
+        AddViewDetail("Processing ended", DisplayDate(GetValue(data, "processingEndTime")))
+        AddViewDetail("Input document ID", StringValue(GetValue(data, "inputFeedDocumentId")))
+        AddViewDetail("Result document ID", StringValue(GetValue(data, "resultFeedDocumentId")))
+        AddViewDetail("Next step", StringValue(GetValue(data, "nextStep")))
+        RemoveBlankViewDetails()
+    End Sub
+
+    Private Sub RenderInboundOperationView(title As String, data As Dictionary(Of String, Object))
+        Dim operationId = StringValue(GetValue(data, "operationId"))
+        Dim status = StringValue(GetValue(data, "operationStatus"))
+        lblViewTitle.Text = title
+        lblViewSubtitle.Text = String.Join(" · ", New String() {
+            FriendlyToken(status),
+            If(operationId = "", "", "Operation " & operationId)
+        }.Where(Function(value) value <> ""))
+        viewSplit.Panel1Collapsed = True
+
+        AddViewDetail("Operation ID", operationId)
+        AddViewDetail("Operation", FriendlyToken(StringValue(GetValue(data, "operation"))))
+        AddViewDetail("Status", FriendlyToken(status))
+        AddViewDetail("Inbound plan ID", StringValue(GetValue(data, "inboundPlanId")))
+        AddViewDetail("Next step", StringValue(GetValue(data, "nextStep")))
+
+        Dim problems = ListValue(GetValue(data, "operationProblems"))
+        For i As Integer = 0 To problems.Count - 1
+            Dim problem = AsDict(problems(i))
+            AddViewDetail("Problem " & (i + 1).ToString(CultureInfo.InvariantCulture),
+                          String.Join(" · ", New String() {
+                              FriendlyToken(StringValue(GetValue(problem, "severity"))),
+                              StringValue(GetValue(problem, "code")),
+                              StringValue(GetValue(problem, "message"))
+                          }.Where(Function(value) value <> "")))
+        Next
+        RemoveBlankViewDetails()
+    End Sub
+
+    Private Sub RenderInboundShipmentView(data As Dictionary(Of String, Object))
+        Dim shipmentId = StringValue(GetValue(data, "shipmentId"))
+        Dim status = StringValue(GetValue(data, "status"))
+        lblViewTitle.Text = FirstNonEmpty(StringValue(GetValue(data, "name")), If(shipmentId = "", "Inbound shipment", "Shipment " & shipmentId))
+        lblViewSubtitle.Text = String.Join(" · ", New String() {
+            FriendlyToken(status),
+            If(shipmentId = "", "", shipmentId)
+        }.Where(Function(value) value <> ""))
+        viewSplit.Panel1Collapsed = True
+
+        AddViewDetail("Shipment ID", shipmentId)
+        AddViewDetail("Status", FriendlyToken(status))
+        AddViewDetail("Amazon reference ID", StringValue(GetValue(data, "amazonReferenceId")))
+        AddViewDetail("Placement option ID", StringValue(GetValue(data, "placementOptionId")))
+        AddViewDetail("Transportation option ID", StringValue(GetValue(data, "selectedTransportationOptionId")))
+        AddViewDetail("Shipment confirmation ID", StringValue(GetValue(data, "shipmentConfirmationId")))
+        RemoveBlankViewDetails()
+
+        Dim rows As New List(Of KeyValuePair(Of String, String))()
+        FlattenViewValue(GetValue(data, "destination"), "destination", rows, 0)
+        FlattenViewValue(GetValue(data, "source"), "source", rows, 0)
+        FlattenViewValue(GetValue(data, "dates"), "dates", rows, 0)
+        FlattenViewValue(GetValue(data, "trackingDetails"), "trackingDetails", rows, 0)
+        For Each row In rows.Take(80)
+            AddViewDetail(PrettyFieldPath(row.Key), row.Value)
+        Next
     End Sub
 
     Private Sub RenderGenericListView(title As String, subtitle As String, records As List(Of Object), fallback As Object)
@@ -2063,6 +2308,12 @@ Public Partial Class MainForm
         Dim value = Regex.Replace(path, "([a-z0-9])([A-Z])", "$1 $2")
         value = Regex.Replace(value, "\[(\d+)\]", " #$1")
         value = value.Replace(".", " › ")
+        value = Regex.Replace(value, "\bId\b", "ID", RegexOptions.IgnoreCase)
+        value = Regex.Replace(value, "\bAsin\b", "ASIN", RegexOptions.IgnoreCase)
+        value = Regex.Replace(value, "\bSku\b", "SKU", RegexOptions.IgnoreCase)
+        value = Regex.Replace(value, "\bMsku\b", "MSKU", RegexOptions.IgnoreCase)
+        value = Regex.Replace(value, "\bFn sku\b", "FNSKU", RegexOptions.IgnoreCase)
+        value = Regex.Replace(value, "\bUrl\b", "URL", RegexOptions.IgnoreCase)
         Return Char.ToUpperInvariant(value(0)) & value.Substring(1)
     End Function
 
@@ -2074,6 +2325,64 @@ Public Partial Class MainForm
         If text.Length > 1200 Then Return text.Substring(0, 1200) & " …"
         Return text
     End Function
+
+    Private Function DisplayDate(value As Object) As String
+        Dim text = ViewValue(value)
+        If text = "" Then Return ""
+        Dim parsed As DateTimeOffset
+        If DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, parsed) Then
+            Return parsed.ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture)
+        End If
+        Return text
+    End Function
+
+    Private Function FriendlyToken(value As String) As String
+        If String.IsNullOrWhiteSpace(value) Then Return ""
+        Dim spaced = value.Replace("_", " ").Trim()
+        If spaced = "" Then Return ""
+        If spaced.All(Function(ch) Not Char.IsLetter(ch) OrElse Char.IsUpper(ch)) Then
+            Return CultureInfo.InvariantCulture.TextInfo.ToTitleCase(spaced.ToLowerInvariant())
+        End If
+        Return spaced
+    End Function
+
+    Private Function FriendlyList(value As Object) As String
+        Dim list = ListValue(value)
+        If list.Count = 0 Then Return FriendlyToken(ViewValue(value))
+        Return String.Join(", ", list.Select(Function(item) FriendlyToken(ViewValue(item))).Where(Function(item) item <> ""))
+    End Function
+
+    Private Function ShortUrl(value As String) As String
+        If String.IsNullOrWhiteSpace(value) Then Return ""
+        Dim uri As Uri = Nothing
+        If Uri.TryCreate(value, UriKind.Absolute, uri) Then
+            Dim path = uri.AbsolutePath
+            If path.Length > 55 Then path = "…" & path.Substring(path.Length - 54)
+            Return uri.Host & path
+        End If
+        If value.Length > 80 Then Return value.Substring(0, 77) & "…"
+        Return value
+    End Function
+
+    Private Sub ApplyStatusStyle(row As DataGridViewRow, status As String)
+        If row Is Nothing OrElse String.IsNullOrWhiteSpace(status) Then Return
+        Dim normalized = status.ToUpperInvariant()
+        If normalized.Contains("FATAL") OrElse normalized.Contains("FAILED") OrElse normalized.Contains("CANCEL") OrElse normalized.Contains("UNFULFILLABLE") Then
+            row.DefaultCellStyle.BackColor = Color.MistyRose
+        ElseIf normalized.Contains("DONE") OrElse normalized.Contains("SUCCESS") OrElse normalized.Contains("SHIPPED") Then
+            row.DefaultCellStyle.BackColor = Color.Honeydew
+        ElseIf normalized.Contains("IN_PROGRESS") OrElse normalized.Contains("IN_QUEUE") OrElse normalized.Contains("PENDING") OrElse normalized.Contains("UNSHIPPED") Then
+            row.DefaultCellStyle.BackColor = Color.LemonChiffon
+        End If
+    End Sub
+
+    Private Sub RemoveBlankViewDetails()
+        For i As Integer = viewDetails.Rows.Count - 1 To 0 Step -1
+            Dim value = Convert.ToString(viewDetails.Rows(i).Cells(1).Value, CultureInfo.InvariantCulture)
+            If String.IsNullOrWhiteSpace(value) Then viewDetails.Rows.RemoveAt(i)
+        Next
+        If viewDetails.Rows.Count = 0 Then AddViewDetail("Result", "Amazon returned no additional fields.")
+    End Sub
 
     Private Function MoneyText(value As Dictionary(Of String, Object)) As String
         If value Is Nothing OrElse value.Count = 0 Then Return ""
