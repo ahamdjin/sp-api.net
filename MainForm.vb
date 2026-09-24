@@ -390,6 +390,79 @@ Public Partial Class MainForm
         If Convert.ToString(viewGrid.Rows(0).Cells(0).Value, CultureInfo.InvariantCulture) <> "ORDER-VIEW-1" Then Throw New InvalidOperationException("Orders View did not show the order ID.")
         If Convert.ToString(viewGrid.Rows(0).Cells(5).Value, CultureInfo.InvariantCulture) <> "USD 25.50" Then Throw New InvalidOperationException("Orders View did not show the Orders 2026 grand total.")
 
+        Dim inventoryViewResult As New ApiResult With {
+            .Ok = True,
+            .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"payload", New Dictionary(Of String, Object) From {
+                    {"inventorySummaries", New Object() {
+                        New Dictionary(Of String, Object) From {
+                            {"productName", "Inventory Product"},
+                            {"sellerSku", "SKU-1"},
+                            {"asin", "ASIN-1"},
+                            {"totalQuantity", 10},
+                            {"inventoryDetails", New Dictionary(Of String, Object) From {
+                                {"fulfillableQuantity", 7},
+                                {"reservedQuantity", New Dictionary(Of String, Object) From {{"totalReservedQuantity", 2}}},
+                                {"unfulfillableQuantity", New Dictionary(Of String, Object) From {{"totalUnfulfillableQuantity", 1}}}
+                            }}
+                        }
+                    }}
+                }}
+            }
+        }
+        RenderResultView("inventory", inventoryViewResult)
+        If viewGrid.Rows.Count <> 1 OrElse Convert.ToString(viewGrid.Rows(0).Cells(3).Value, CultureInfo.InvariantCulture) <> "7" Then Throw New InvalidOperationException("Inventory View did not show fulfillable quantity.")
+
+        Dim prepViewResult As New ApiResult With {
+            .Ok = True,
+            .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"mskuPrepDetails", New Object() {
+                    New Dictionary(Of String, Object) From {
+                        {"msku", "MSKU-1"},
+                        {"prepCategory", "FRAGILE"},
+                        {"prepTypes", New Object() {"ITEM_BUBBLEWRAP", "ITEM_LABELING"}}
+                    }
+                }}
+            }
+        }
+        RenderResultView("prepDetails", prepViewResult)
+        If viewGrid.Rows.Count <> 1 OrElse Not Convert.ToString(viewGrid.Rows(0).Cells(2).Value, CultureInfo.InvariantCulture).Contains("Item Bubblewrap") Then Throw New InvalidOperationException("Prep View did not render prep types readably.")
+
+        Dim documentViewResult As New ApiResult With {
+            .Ok = True,
+            .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"payload", New Dictionary(Of String, Object) From {{"DownloadURL", "https://example.com/document.pdf"}}}
+            }
+        }
+        RenderResultView("billOfLading", documentViewResult)
+        If viewDetails.Rows.Count = 0 Then Throw New InvalidOperationException("Document View did not render payload download information.")
+
+        Dim singleOrderViewResult As New ApiResult With {
+            .Ok = True,
+            .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"orderId", "ORDER-SINGLE"},
+                {"createdTime", "2026-09-24T10:00:00Z"},
+                {"fulfillment", New Dictionary(Of String, Object) From {{"fulfillmentStatus", "SHIPPED"}}},
+                {"orderItems", New Object() {
+                    New Dictionary(Of String, Object) From {
+                        {"quantityOrdered", 2},
+                        {"product", New Dictionary(Of String, Object) From {
+                            {"asin", "ASIN-ITEM"},
+                            {"sellerSku", "SKU-ITEM"},
+                            {"title", "Order Item"},
+                            {"price", New Dictionary(Of String, Object) From {{"currencyCode", "USD"}, {"amount", "9.99"}}}
+                        }}
+                    }
+                }}
+            }
+        }
+        RenderResultView("order", singleOrderViewResult)
+        If viewGrid.Rows.Count <> 1 OrElse Convert.ToString(viewGrid.Rows(0).Cells(2).Value, CultureInfo.InvariantCulture) <> "Order Item" Then Throw New InvalidOperationException("Single Order View did not render order items.")
+
         Dim viewFailure As New ApiResult With {
             .Ok = False,
             .Status = 403,
@@ -1741,7 +1814,7 @@ Public Partial Class MainForm
                        StringValue(GetValue(item, "asin")),
                        FirstNonEmpty(CatalogTitle(item), StringValue(GetValue(summary, "itemName"))),
                        StringValue(GetValue(summary, "brand")),
-                       StringValue(GetValue(productType, "productType")),
+                       FriendlyToken(StringValue(GetValue(productType, "productType"))),
                        StringValue(GetValue(summary, "marketplaceId")))
         Next
         viewSplit.Panel1Collapsed = False
@@ -1755,7 +1828,7 @@ Public Partial Class MainForm
         Dim total = AsDict(GetValue(estimate, "TotalFeesEstimate"))
         Dim status = StringValue(GetValue(result, "Status"))
         Dim totalText = MoneyText(total)
-        lblViewSubtitle.Text = FirstNonEmpty(status, "Amazon fee response") & If(totalText = "", "", " · total " & totalText)
+        lblViewSubtitle.Text = FirstNonEmpty(FriendlyToken(status), "Amazon fee response") & If(totalText = "", "", " · total " & totalText)
 
         Dim fees = ListValue(GetValue(estimate, "FeeDetailList"))
         If fees.Count = 0 Then
@@ -1780,7 +1853,7 @@ Public Partial Class MainForm
                        MoneyText(AsDict(GetValue(fee, "TaxAmount"))))
         Next
         viewSplit.Panel1Collapsed = False
-        AddViewDetail("Status", status)
+        AddViewDetail("Status", FriendlyToken(status))
         AddViewDetail("Total fees", totalText)
     End Sub
 
@@ -1899,8 +1972,8 @@ Public Partial Class MainForm
             AddViewRow(record,
                        StringValue(GetValue(record, "feedId")),
                        StringValue(GetValue(record, "feedType")),
-                       StringValue(GetValue(record, "processingStatus")),
-                       StringValue(GetValue(record, "createdTime")),
+                       FriendlyToken(StringValue(GetValue(record, "processingStatus"))),
+                       DisplayDate(GetValue(record, "createdTime")),
                        StringValue(GetValue(record, "resultFeedDocumentId")))
             ApplyStatusStyle(viewGrid.Rows(viewGrid.Rows.Count - 1), StringValue(GetValue(record, "processingStatus")))
         Next
@@ -1954,8 +2027,12 @@ Public Partial Class MainForm
             AddViewRow(shipment,
                        StringValue(GetValue(shipment, "shipmentId")),
                        StringValue(GetValue(shipment, "name")),
-                       StringValue(GetValue(shipment, "status")),
-                       FirstNonEmpty(StringValue(GetValue(destination, "warehouseId")), StringValue(GetValue(shipment, "destinationType"))))
+                       FriendlyToken(StringValue(GetValue(shipment, "status"))),
+                       FirstNonEmpty(
+                           StringValue(GetValue(destination, "warehouseId")),
+                           FriendlyToken(StringValue(GetValue(destination, "destinationType"))),
+                           FriendlyToken(StringValue(GetValue(shipment, "destinationType")))))
+            ApplyStatusStyle(viewGrid.Rows(viewGrid.Rows.Count - 1), StringValue(GetValue(shipment, "status")))
         Next
         viewSplit.Panel1Collapsed = False
     End Sub
@@ -2060,18 +2137,21 @@ Public Partial Class MainForm
         lblViewSubtitle.Text = If(documents.Count = 0, "Document metadata returned", documents.Count.ToString(CultureInfo.InvariantCulture) & " downloadable document(s) returned")
         viewSplit.Panel1Collapsed = True
 
-        AddViewDetail("Document ID", FirstNonEmpty(StringValue(GetValue(data, "reportDocumentId")), StringValue(GetValue(data, "feedDocumentId"))))
-        AddViewDetail("Compression", FriendlyToken(StringValue(GetValue(data, "compressionAlgorithm"))))
-        AddViewDetail("Download URL", ShortUrl(StringValue(GetValue(data, "url"))))
+        AddViewDetailIfPresent("Document ID", FirstNonEmpty(StringValue(GetValue(data, "reportDocumentId")), StringValue(GetValue(data, "feedDocumentId"))))
+        AddViewDetailIfPresent("Compression", FriendlyToken(StringValue(GetValue(data, "compressionAlgorithm"))))
+
+        For i As Integer = 0 To documents.Count - 1
+            AddViewDetail("Download " & (i + 1).ToString(CultureInfo.InvariantCulture), ShortUrl(documents(i).Value))
+        Next
 
         Dim downloaded = AsDict(GetValue(data, "downloaded"))
         If downloaded.Count > 0 Then
-            AddViewDetail("Content type", StringValue(GetValue(downloaded, "contentType")))
-            AddViewDetail("Bytes read", ViewValue(GetValue(downloaded, "bytesRead")))
-            AddViewDetail("Preview truncated", ViewValue(GetValue(downloaded, "truncated")))
-            AddViewDetail("Preview error", StringValue(GetValue(downloaded, "error")))
+            AddViewDetailIfPresent("Content type", StringValue(GetValue(downloaded, "contentType")))
+            AddViewDetailIfPresent("Bytes read", ViewValue(GetValue(downloaded, "bytesRead")))
+            If GetValue(downloaded, "truncated") IsNot Nothing Then AddViewDetail("Preview truncated", ViewValue(GetValue(downloaded, "truncated")))
+            AddViewDetailIfPresent("Preview error", StringValue(GetValue(downloaded, "error")))
             Dim preview = StringValue(GetValue(downloaded, "content"))
-            If preview <> "" Then AddViewDetail("Text preview", preview)
+            If preview <> "" Then AddViewDetail("Text preview", PreviewText(preview))
         End If
 
         If viewDetails.Rows.Count = 0 Then RenderDetailsFromObject(data)
@@ -2173,7 +2253,7 @@ Public Partial Class MainForm
         FlattenViewValue(GetValue(data, "dates"), "dates", rows, 0)
         FlattenViewValue(GetValue(data, "trackingDetails"), "trackingDetails", rows, 0)
         For Each row In rows.Take(80)
-            AddViewDetail(PrettyFieldPath(row.Key), row.Value)
+            AddViewDetail(PrettyFieldPath(row.Key), FriendlyDetailValue(row.Key, row.Value))
         Next
     End Sub
 
@@ -2251,7 +2331,7 @@ Public Partial Class MainForm
             Return
         End If
         For Each row In rows.Take(250)
-            AddViewDetail(PrettyFieldPath(row.Key), row.Value)
+            AddViewDetail(PrettyFieldPath(row.Key), FriendlyDetailValue(row.Key, row.Value))
         Next
         If rows.Count > 250 Then AddViewDetail("More fields", (rows.Count - 250).ToString(CultureInfo.InvariantCulture) & " additional fields are available in Raw response.")
     End Sub
@@ -2303,6 +2383,38 @@ Public Partial Class MainForm
         viewDetails.Rows.Add(field, value)
     End Sub
 
+    Private Sub AddViewDetailIfPresent(field As String, value As String)
+        If String.IsNullOrWhiteSpace(value) Then Return
+        AddViewDetail(field, value)
+    End Sub
+
+    Private Function FriendlyDetailValue(path As String, value As String) As String
+        If String.IsNullOrWhiteSpace(value) Then Return ""
+        Dim key = path.ToLowerInvariant()
+
+        If key.EndsWith("time", StringComparison.Ordinal) OrElse
+           key.EndsWith("date", StringComparison.Ordinal) OrElse
+           key.EndsWith("createdat", StringComparison.Ordinal) OrElse
+           key.EndsWith("updatedat", StringComparison.Ordinal) OrElse
+           key.EndsWith("expiration", StringComparison.Ordinal) Then
+            Return DisplayDate(value)
+        End If
+
+        If key.Contains("status") OrElse key.EndsWith("owner", StringComparison.Ordinal) OrElse
+           key.EndsWith("category", StringComparison.Ordinal) OrElse key.EndsWith("severity", StringComparison.Ordinal) Then
+            Return FriendlyToken(value)
+        End If
+
+        Return value
+    End Function
+
+    Private Function PreviewText(value As String) As String
+        If String.IsNullOrEmpty(value) Then Return ""
+        Const maxPreviewChars As Integer = 6000
+        If value.Length <= maxPreviewChars Then Return value
+        Return value.Substring(0, maxPreviewChars) & Environment.NewLine & "… preview shortened here; complete preview is available in Raw response."
+    End Function
+
     Private Function PrettyFieldPath(path As String) As String
         If String.IsNullOrWhiteSpace(path) Then Return "Value"
         Dim value = Regex.Replace(path, "([a-z0-9])([A-Z])", "$1 $2")
@@ -2329,6 +2441,7 @@ Public Partial Class MainForm
     Private Function DisplayDate(value As Object) As String
         Dim text = ViewValue(value)
         If text = "" Then Return ""
+        If Regex.IsMatch(text, "^\d{4}-\d{2}-\d{2}$") Then Return text
         Dim parsed As DateTimeOffset
         If DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, parsed) Then
             Return parsed.ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture)
