@@ -1486,6 +1486,561 @@ Public Partial Class MainForm
         sb.Append(Serializer.Serialize(value))
     End Sub
 
+    ' -------------------- Readable result view --------------------
+    Private Sub ClearResultView(title As String, subtitle As String)
+        RenderingView = True
+        Try
+            lblViewTitle.Text = title
+            lblViewSubtitle.Text = subtitle
+            lblViewDetails.Text = "Details"
+            viewGrid.Rows.Clear()
+            viewGrid.Columns.Clear()
+            viewDetails.Rows.Clear()
+            viewSplit.Panel1Collapsed = True
+        Finally
+            RenderingView = False
+        End Try
+    End Sub
+
+    Private Sub RenderResultView(operation As String, result As ApiResult)
+        RenderingView = True
+        Try
+            viewGrid.Rows.Clear()
+            viewGrid.Columns.Clear()
+            viewDetails.Rows.Clear()
+            lblViewDetails.Text = "Details"
+
+            If Not result.Ok Then
+                lblViewTitle.Text = "Request failed"
+                lblViewSubtitle.Text = If(result.Status > 0, result.Status.ToString(CultureInfo.InvariantCulture) & " " & result.StatusText, result.StatusText)
+                viewSplit.Panel1Collapsed = True
+                AddViewDetail("Code", If(result.Problem Is Nothing, "", result.Problem.Code))
+                AddViewDetail("Message", If(result.Problem Is Nothing, result.ErrorMessage, result.Problem.Message))
+                If result.Problem IsNot Nothing Then
+                    AddViewDetail("Details", result.Problem.Details)
+                    AddViewDetail("What to do", result.Problem.Action)
+                    AddViewDetail("Retryable", If(result.Problem.Retryable, "Yes", "No"))
+                End If
+                AddViewDetail("Amazon request ID", result.RequestId)
+                Return
+            End If
+
+            Dim data = AsDict(result.Data)
+            Select Case operation
+                Case "connection"
+                    lblViewTitle.Text = "Connection successful"
+                    lblViewSubtitle.Text = SelectedMarketplace().Name & " · " & EnvironmentName()
+                    viewSplit.Panel1Collapsed = True
+                    AddViewDetail("Environment", EnvironmentName())
+                    AddViewDetail("Marketplace", SelectedMarketplace().Name)
+                    AddViewDetail("Marketplace ID", SelectedMarketplace().Id)
+                    AddViewDetail("SP-API endpoint", Endpoint())
+                    AddViewDetail("Amazon request ID", result.RequestId)
+
+                Case "catalog"
+                    RenderCatalogView(data)
+
+                Case "fees"
+                    RenderFeesView(data)
+
+                Case "inventory"
+                    RenderInventoryView(data)
+
+                Case "orders"
+                    RenderOrdersView(data)
+
+                Case "reports"
+                    RenderReportsView(data)
+
+                Case "feeds"
+                    RenderFeedsView(data)
+
+                Case "inboundPlans"
+                    RenderInboundPlansView(data)
+
+                Case "inboundPlan"
+                    RenderInboundPlanView(data)
+
+                Case "prepDetails"
+                    RenderGenericListView("Prep details", "Amazon preparation requirements", FirstList(data, "mskuPrepDetails", "prepDetails", "items"), data)
+
+                Case "reportDocument", "feedDocument"
+                    RenderObjectView(If(operation = "reportDocument", "Report document", "Feed processing report"), "Document metadata and downloaded preview information", data)
+
+                Case "itemLabels"
+                    RenderGenericListView("Item labels", "Returned label documents", FirstList(data, "documentDownloads", "documents"), data)
+
+                Case "shipmentLabels"
+                    RenderObjectView("Shipment labels", "Amazon shipment-label response", data)
+
+                Case "billOfLading"
+                    RenderObjectView("Bill of lading", "Amazon bill-of-lading response", data)
+
+                Case "order"
+                    RenderObjectView("Order", "Amazon order details", data)
+
+                Case "inboundShipment"
+                    RenderObjectView("Inbound shipment", "Shipment details", data)
+
+                Case "report"
+                    RenderObjectView("Report status", "Current Amazon report job state", data)
+
+                Case "feed"
+                    RenderObjectView("Feed status", "Current Amazon feed job state", data)
+
+                Case "createReport"
+                    RenderObjectView("Report requested", "Amazon accepted the report request", data)
+
+                Case "submitFeed"
+                    RenderObjectView("Feed submitted", "Amazon accepted the feed workflow", data)
+
+                Case "createInboundPlan"
+                    RenderObjectView("Inbound plan requested", "Amazon accepted the inbound-plan workflow", data)
+
+                Case "inboundOperationStatus"
+                    RenderObjectView("Inbound operation status", "Current asynchronous operation state", data)
+
+                Case Else
+                    RenderObjectView(Operations.Where(Function(op) op.Id = operation).Select(Function(op) op.Label).FirstOrDefault(), "Returned Amazon data", data)
+            End Select
+        Finally
+            RenderingView = False
+        End Try
+
+        If viewGrid.Rows.Count > 0 Then
+            viewGrid.ClearSelection()
+            viewGrid.Rows(0).Selected = True
+            viewGrid.CurrentCell = viewGrid.Rows(0).Cells(0)
+            ShowSelectedViewRecord()
+        End If
+    End Sub
+
+    Private Sub RenderCatalogView(data As Dictionary(Of String, Object))
+        Dim items = ListValue(GetValue(data, "items"))
+        lblViewTitle.Text = "Products"
+        lblViewSubtitle.Text = items.Count.ToString(CultureInfo.InvariantCulture) & " catalogue record(s) returned"
+
+        Dim family = AsDict(GetValue(data, "family"))
+        If family.Count > 0 Then
+            Dim returnedCount = Convert.ToString(GetValue(family, "returnedCount"), CultureInfo.InvariantCulture)
+            Dim requestedCount = Convert.ToString(GetValue(family, "requestedCount"), CultureInfo.InvariantCulture)
+            If returnedCount <> "" AndAlso requestedCount <> "" Then
+                lblViewSubtitle.Text &= " · related family " & returnedCount & " of " & requestedCount
+            End If
+        End If
+
+        If items.Count = 0 Then
+            RenderDetailsFromObject(data)
+            viewSplit.Panel1Collapsed = True
+            Return
+        End If
+
+        ConfigureViewTable(
+            Tuple.Create("ASIN", 18),
+            Tuple.Create("Title", 42),
+            Tuple.Create("Brand", 16),
+            Tuple.Create("Product type", 16),
+            Tuple.Create("Marketplace", 16))
+
+        For Each raw In items
+            Dim item = AsDict(raw)
+            Dim summary = FirstDictionary(item, "summaries")
+            Dim productType = FirstDictionary(item, "productTypes")
+            AddViewRow(item,
+                       StringValue(GetValue(item, "asin")),
+                       FirstNonEmpty(CatalogTitle(item), StringValue(GetValue(summary, "itemName"))),
+                       StringValue(GetValue(summary, "brand")),
+                       StringValue(GetValue(productType, "productType")),
+                       StringValue(GetValue(summary, "marketplaceId")))
+        Next
+        viewSplit.Panel1Collapsed = False
+    End Sub
+
+    Private Sub RenderFeesView(data As Dictionary(Of String, Object))
+        lblViewTitle.Text = "Fee estimate"
+        Dim payload = AsDict(GetValue(data, "payload"))
+        Dim result = AsDict(GetValue(payload, "FeesEstimateResult"))
+        Dim estimate = AsDict(GetValue(result, "FeesEstimate"))
+        Dim total = AsDict(GetValue(estimate, "TotalFeesEstimate"))
+        Dim status = StringValue(GetValue(result, "Status"))
+        Dim totalText = MoneyText(total)
+        lblViewSubtitle.Text = FirstNonEmpty(status, "Amazon fee response") & If(totalText = "", "", " · total " & totalText)
+
+        Dim fees = ListValue(GetValue(estimate, "FeeDetailList"))
+        If fees.Count = 0 Then
+            viewSplit.Panel1Collapsed = True
+            RenderDetailsFromObject(data)
+            Return
+        End If
+
+        ConfigureViewTable(
+            Tuple.Create("Fee", 34),
+            Tuple.Create("Amount", 24),
+            Tuple.Create("Promotion", 24),
+            Tuple.Create("Tax", 18))
+        For Each raw In fees
+            Dim fee = AsDict(raw)
+            Dim amount = AsDict(GetValue(fee, "FinalFee"))
+            If amount.Count = 0 Then amount = AsDict(GetValue(fee, "FeeAmount"))
+            AddViewRow(fee,
+                       FirstNonEmpty(StringValue(GetValue(fee, "FeeType")), StringValue(GetValue(fee, "FeeName"))),
+                       MoneyText(amount),
+                       MoneyText(AsDict(GetValue(fee, "FeePromotion"))),
+                       MoneyText(AsDict(GetValue(fee, "TaxAmount"))))
+        Next
+        viewSplit.Panel1Collapsed = False
+        AddViewDetail("Status", status)
+        AddViewDetail("Total fees", totalText)
+    End Sub
+
+    Private Sub RenderInventoryView(data As Dictionary(Of String, Object))
+        Dim payload = AsDict(GetValue(data, "payload"))
+        Dim records = ListValue(GetValue(payload, "inventorySummaries"))
+        lblViewTitle.Text = "FBA inventory"
+        lblViewSubtitle.Text = records.Count.ToString(CultureInfo.InvariantCulture) & " inventory record(s)"
+
+        If records.Count = 0 Then
+            viewSplit.Panel1Collapsed = True
+            RenderDetailsFromObject(data)
+            Return
+        End If
+
+        ConfigureViewTable(
+            Tuple.Create("Seller SKU", 24),
+            Tuple.Create("ASIN", 18),
+            Tuple.Create("FNSKU", 18),
+            Tuple.Create("Condition", 18),
+            Tuple.Create("Total", 12))
+        For Each raw In records
+            Dim record = AsDict(raw)
+            AddViewRow(record,
+                       StringValue(GetValue(record, "sellerSku")),
+                       StringValue(GetValue(record, "asin")),
+                       FirstNonEmpty(StringValue(GetValue(record, "fnSku")), StringValue(GetValue(record, "fnsku"))),
+                       StringValue(GetValue(record, "condition")),
+                       ViewValue(GetValue(record, "totalQuantity")))
+        Next
+        viewSplit.Panel1Collapsed = False
+    End Sub
+
+    Private Sub RenderOrdersView(data As Dictionary(Of String, Object))
+        Dim records = ListValue(GetValue(data, "orders"))
+        lblViewTitle.Text = "Orders"
+        lblViewSubtitle.Text = records.Count.ToString(CultureInfo.InvariantCulture) & " order(s)"
+
+        If records.Count = 0 Then
+            viewSplit.Panel1Collapsed = True
+            RenderDetailsFromObject(data)
+            Return
+        End If
+
+        ConfigureViewTable(
+            Tuple.Create("Order ID", 25),
+            Tuple.Create("Status", 18),
+            Tuple.Create("Purchase date", 21),
+            Tuple.Create("Fulfilled by", 15),
+            Tuple.Create("Channel", 15),
+            Tuple.Create("Total", 16))
+        For Each raw In records
+            Dim record = AsDict(raw)
+            Dim fulfillment = AsDict(GetValue(record, "fulfillment"))
+            Dim total = AsDict(GetValue(record, "orderTotal"))
+            AddViewRow(record,
+                       FirstNonEmpty(StringValue(GetValue(record, "orderId")), StringValue(GetValue(record, "amazonOrderId"))),
+                       FirstNonEmpty(StringValue(GetValue(fulfillment, "fulfillmentStatus")), StringValue(GetValue(record, "orderStatus"))),
+                       FirstNonEmpty(StringValue(GetValue(record, "purchaseDate")), StringValue(GetValue(record, "createdAt"))),
+                       FirstNonEmpty(StringValue(GetValue(record, "fulfilledBy")), StringValue(GetValue(fulfillment, "fulfilledBy"))),
+                       FirstNonEmpty(StringValue(GetValue(record, "salesChannel")), StringValue(GetValue(record, "marketplaceId"))),
+                       MoneyText(total))
+        Next
+        viewSplit.Panel1Collapsed = False
+    End Sub
+
+    Private Sub RenderReportsView(data As Dictionary(Of String, Object))
+        Dim records = ListValue(GetValue(data, "reports"))
+        lblViewTitle.Text = "Reports"
+        lblViewSubtitle.Text = records.Count.ToString(CultureInfo.InvariantCulture) & " report job(s)"
+        If records.Count = 0 Then RenderObjectView("Reports", "No report jobs returned", data) : Return
+
+        ConfigureViewTable(
+            Tuple.Create("Report ID", 20),
+            Tuple.Create("Type", 32),
+            Tuple.Create("Status", 16),
+            Tuple.Create("Created", 18),
+            Tuple.Create("Document ID", 22))
+        For Each raw In records
+            Dim record = AsDict(raw)
+            AddViewRow(record,
+                       StringValue(GetValue(record, "reportId")),
+                       StringValue(GetValue(record, "reportType")),
+                       StringValue(GetValue(record, "processingStatus")),
+                       StringValue(GetValue(record, "createdTime")),
+                       StringValue(GetValue(record, "reportDocumentId")))
+        Next
+        viewSplit.Panel1Collapsed = False
+    End Sub
+
+    Private Sub RenderFeedsView(data As Dictionary(Of String, Object))
+        Dim records = ListValue(GetValue(data, "feeds"))
+        lblViewTitle.Text = "Feeds"
+        lblViewSubtitle.Text = records.Count.ToString(CultureInfo.InvariantCulture) & " feed job(s)"
+        If records.Count = 0 Then RenderObjectView("Feeds", "No feed jobs returned", data) : Return
+
+        ConfigureViewTable(
+            Tuple.Create("Feed ID", 20),
+            Tuple.Create("Type", 30),
+            Tuple.Create("Status", 16),
+            Tuple.Create("Created", 18),
+            Tuple.Create("Result document", 24))
+        For Each raw In records
+            Dim record = AsDict(raw)
+            AddViewRow(record,
+                       StringValue(GetValue(record, "feedId")),
+                       StringValue(GetValue(record, "feedType")),
+                       StringValue(GetValue(record, "processingStatus")),
+                       StringValue(GetValue(record, "createdTime")),
+                       StringValue(GetValue(record, "resultFeedDocumentId")))
+        Next
+        viewSplit.Panel1Collapsed = False
+    End Sub
+
+    Private Sub RenderInboundPlansView(data As Dictionary(Of String, Object))
+        Dim records = ListValue(GetValue(data, "inboundPlans"))
+        lblViewTitle.Text = "Inbound plans"
+        lblViewSubtitle.Text = records.Count.ToString(CultureInfo.InvariantCulture) & " plan(s)"
+        If records.Count = 0 Then RenderObjectView("Inbound plans", "No inbound plans returned", data) : Return
+
+        ConfigureViewTable(
+            Tuple.Create("Plan ID", 28),
+            Tuple.Create("Name", 26),
+            Tuple.Create("Status", 16),
+            Tuple.Create("Created", 18),
+            Tuple.Create("Updated", 18))
+        For Each raw In records
+            Dim record = AsDict(raw)
+            AddViewRow(record,
+                       StringValue(GetValue(record, "inboundPlanId")),
+                       StringValue(GetValue(record, "name")),
+                       StringValue(GetValue(record, "status")),
+                       FirstNonEmpty(StringValue(GetValue(record, "createdAt")), StringValue(GetValue(record, "createdTime"))),
+                       FirstNonEmpty(StringValue(GetValue(record, "lastUpdatedAt")), StringValue(GetValue(record, "lastUpdatedTime"))))
+        Next
+        viewSplit.Panel1Collapsed = False
+    End Sub
+
+    Private Sub RenderInboundPlanView(data As Dictionary(Of String, Object))
+        Dim shipments = ListValue(GetValue(data, "shipments"))
+        lblViewTitle.Text = FirstNonEmpty(StringValue(GetValue(data, "name")), "Inbound plan")
+        lblViewSubtitle.Text = FirstNonEmpty(StringValue(GetValue(data, "inboundPlanId")), shipments.Count.ToString(CultureInfo.InvariantCulture) & " shipment(s)")
+
+        If shipments.Count = 0 Then
+            viewSplit.Panel1Collapsed = True
+            RenderDetailsFromObject(data)
+            Return
+        End If
+
+        ConfigureViewTable(
+            Tuple.Create("Shipment ID", 30),
+            Tuple.Create("Name", 25),
+            Tuple.Create("Status", 18),
+            Tuple.Create("Destination", 27))
+        For Each raw In shipments
+            Dim shipment = AsDict(raw)
+            Dim destination = AsDict(GetValue(shipment, "destination"))
+            AddViewRow(shipment,
+                       StringValue(GetValue(shipment, "shipmentId")),
+                       StringValue(GetValue(shipment, "name")),
+                       StringValue(GetValue(shipment, "status")),
+                       FirstNonEmpty(StringValue(GetValue(destination, "warehouseId")), StringValue(GetValue(shipment, "destinationType"))))
+        Next
+        viewSplit.Panel1Collapsed = False
+    End Sub
+
+    Private Sub RenderGenericListView(title As String, subtitle As String, records As List(Of Object), fallback As Object)
+        lblViewTitle.Text = title
+        lblViewSubtitle.Text = subtitle & If(records.Count > 0, " · " & records.Count.ToString(CultureInfo.InvariantCulture) & " record(s)", "")
+        If records.Count = 0 Then
+            viewSplit.Panel1Collapsed = True
+            RenderDetailsFromObject(fallback)
+            Return
+        End If
+
+        ConfigureViewTable(Tuple.Create("Record", 100))
+        For i As Integer = 0 To records.Count - 1
+            Dim record = records(i)
+            AddViewRow(record, RecordSummary(record, i + 1))
+        Next
+        viewSplit.Panel1Collapsed = False
+    End Sub
+
+    Private Sub RenderObjectView(title As String, subtitle As String, value As Object)
+        lblViewTitle.Text = If(String.IsNullOrWhiteSpace(title), "Result", title)
+        lblViewSubtitle.Text = subtitle
+        viewSplit.Panel1Collapsed = True
+        RenderDetailsFromObject(value)
+    End Sub
+
+    Private Sub ConfigureViewTable(ParamArray columns() As Tuple(Of String, Integer))
+        viewGrid.Rows.Clear()
+        viewGrid.Columns.Clear()
+        For Each column In columns
+            Dim gridColumn As New DataGridViewTextBoxColumn With {
+                .HeaderText = column.Item1,
+                .Name = Regex.Replace(column.Item1, "[^A-Za-z0-9]", ""),
+                .FillWeight = CSng(Math.Max(5, column.Item2)),
+                .AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill
+            }
+            viewGrid.Columns.Add(gridColumn)
+        Next
+    End Sub
+
+    Private Sub AddViewRow(source As Object, ParamArray values() As Object)
+        Dim displayValues = values.Select(Function(value) ViewValue(value)).Cast(Of Object)().ToArray()
+        Dim index = viewGrid.Rows.Add(displayValues)
+        viewGrid.Rows(index).Tag = source
+    End Sub
+
+    Private Sub ViewGridSelectionChanged(sender As Object, e As EventArgs)
+        If RenderingView Then Return
+        ShowSelectedViewRecord()
+    End Sub
+
+    Private Sub ShowSelectedViewRecord()
+        If viewGrid.SelectedRows.Count = 0 Then Return
+        Dim source = viewGrid.SelectedRows(0).Tag
+        If source Is Nothing Then Return
+        lblViewDetails.Text = "Selected record details"
+        RenderDetailsFromObject(source)
+    End Sub
+
+    Private Sub ViewGridDoubleClick(sender As Object, e As DataGridViewCellEventArgs)
+        If e.RowIndex < 0 Then Return
+        If e.RowIndex < ReturnedRecordActions.Count Then
+            cboReturnedRecords.SelectedIndex = e.RowIndex
+            OpenReturnedRecord(Nothing, EventArgs.Empty)
+        End If
+    End Sub
+
+    Private Sub RenderDetailsFromObject(value As Object)
+        viewDetails.Rows.Clear()
+        Dim rows As New List(Of KeyValuePair(Of String, String))()
+        FlattenViewValue(value, "", rows, 0)
+        If rows.Count = 0 Then
+            AddViewDetail("Result", "No additional fields returned.")
+            Return
+        End If
+        For Each row In rows.Take(250)
+            AddViewDetail(PrettyFieldPath(row.Key), row.Value)
+        Next
+        If rows.Count > 250 Then AddViewDetail("More fields", (rows.Count - 250).ToString(CultureInfo.InvariantCulture) & " additional fields are available in Raw response.")
+    End Sub
+
+    Private Sub FlattenViewValue(value As Object, path As String, rows As List(Of KeyValuePair(Of String, String)), depth As Integer)
+        If rows.Count > 350 OrElse depth > 8 Then Return
+
+        If value Is Nothing Then
+            If path <> "" Then rows.Add(New KeyValuePair(Of String, String)(path, ""))
+            Return
+        End If
+
+        Dim dict = TryCast(value, Dictionary(Of String, Object))
+        If dict IsNot Nothing Then
+            If dict.Count = 0 AndAlso path <> "" Then rows.Add(New KeyValuePair(Of String, String)(path, "(empty)"))
+            For Each pair In dict
+                Dim nextPath = If(path = "", pair.Key, path & "." & pair.Key)
+                FlattenViewValue(pair.Value, nextPath, rows, depth + 1)
+            Next
+            Return
+        End If
+
+        Dim list = ListValue(value)
+        If TypeOf value Is Object() OrElse TypeOf value Is ArrayList OrElse TypeOf value Is IEnumerable(Of Object) Then
+            If list.Count = 0 Then
+                If path <> "" Then rows.Add(New KeyValuePair(Of String, String)(path, "(none)"))
+                Return
+            End If
+
+            Dim simple = list.All(Function(item) item Is Nothing OrElse TypeOf item Is String OrElse TypeOf item Is ValueType)
+            If simple Then
+                rows.Add(New KeyValuePair(Of String, String)(path, String.Join(", ", list.Select(Function(item) ViewValue(item)))))
+                Return
+            End If
+
+            For i As Integer = 0 To Math.Min(list.Count, 25) - 1
+                FlattenViewValue(list(i), path & "[" & (i + 1).ToString(CultureInfo.InvariantCulture) & "]", rows, depth + 1)
+            Next
+            If list.Count > 25 Then rows.Add(New KeyValuePair(Of String, String)(path & ".more", (list.Count - 25).ToString(CultureInfo.InvariantCulture) & " more item(s)"))
+            Return
+        End If
+
+        rows.Add(New KeyValuePair(Of String, String)(If(path = "", "Value", path), ViewValue(value)))
+    End Sub
+
+    Private Sub AddViewDetail(field As String, value As String)
+        If String.IsNullOrWhiteSpace(field) Then field = "Value"
+        If value Is Nothing Then value = ""
+        viewDetails.Rows.Add(field, value)
+    End Sub
+
+    Private Function PrettyFieldPath(path As String) As String
+        If String.IsNullOrWhiteSpace(path) Then Return "Value"
+        Dim value = Regex.Replace(path, "([a-z0-9])([A-Z])", "$1 $2")
+        value = Regex.Replace(value, "\[(\d+)\]", " #$1")
+        value = value.Replace(".", " › ")
+        Return Char.ToUpperInvariant(value(0)) & value.Substring(1)
+    End Function
+
+    Private Function ViewValue(value As Object) As String
+        If value Is Nothing Then Return ""
+        If TypeOf value Is Boolean Then Return If(CBool(value), "Yes", "No")
+        Dim text = Convert.ToString(value, CultureInfo.InvariantCulture)
+        If text Is Nothing Then Return ""
+        If text.Length > 1200 Then Return text.Substring(0, 1200) & " …"
+        Return text
+    End Function
+
+    Private Function MoneyText(value As Dictionary(Of String, Object)) As String
+        If value Is Nothing OrElse value.Count = 0 Then Return ""
+        Dim currency = FirstNonEmpty(StringValue(GetValue(value, "CurrencyCode")), StringValue(GetValue(value, "currencyCode")), StringValue(GetValue(value, "currency")))
+        Dim amountObj = GetValue(value, "Amount")
+        If amountObj Is Nothing Then amountObj = GetValue(value, "amount")
+        Dim amount = ViewValue(amountObj)
+        If currency = "" Then Return amount
+        If amount = "" Then Return currency
+        Return currency & " " & amount
+    End Function
+
+    Private Function FirstNonEmpty(ParamArray values() As String) As String
+        For Each value In values
+            If Not String.IsNullOrWhiteSpace(value) Then Return value
+        Next
+        Return ""
+    End Function
+
+    Private Function FirstDictionary(container As Dictionary(Of String, Object), key As String) As Dictionary(Of String, Object)
+        Dim list = ListValue(GetValue(container, key))
+        If list.Count = 0 Then Return New Dictionary(Of String, Object)()
+        Return AsDict(list(0))
+    End Function
+
+    Private Function FirstList(container As Dictionary(Of String, Object), ParamArray keys() As String) As List(Of Object)
+        For Each key In keys
+            Dim list = ListValue(GetValue(container, key))
+            If list.Count > 0 Then Return list
+        Next
+        Return New List(Of Object)()
+    End Function
+
+    Private Function RecordSummary(value As Object, index As Integer) As String
+        Dim dict = AsDict(value)
+        If dict.Count = 0 Then Return "Record " & index.ToString(CultureInfo.InvariantCulture)
+        For Each key In {"asin", "orderId", "amazonOrderId", "reportId", "feedId", "inboundPlanId", "shipmentId", "msku", "sellerSku", "name"}
+            Dim found = StringValue(GetValue(dict, key))
+            If found <> "" Then Return found
+        Next
+        Return "Record " & index.ToString(CultureInfo.InvariantCulture)
+    End Function
+
     ' -------------------- Results and follow-up UX --------------------
     Private Sub ShowResult(operation As String, result As ApiResult)
         LastResult = result
