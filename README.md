@@ -39,9 +39,18 @@ Choose an operation on the left. The form shows only the fields for that operati
 
 Sandbox displays Amazon's fixture guidance and has an explicit **Load Sandbox example into the form** button for static examples. Nothing is silently substituted. Dynamic Sandbox operations remain manual.
 
-The **Result** tab shows the readable outcome, returned IDs, documents, and the next useful action. Asynchronous report/feed/inbound flows provide a simple **Next step** button. Paginated operations can load the returned next-page token without copy/paste. List operations such as orders, reports, feeds, inbound plans, and shipments expose returned records through a simple **Open selected** control. If Amazon returns several label/document URLs, all of them remain selectable.
+The **View** tab is the normal result screen. It renders Amazon data as readable tables and field/value details instead of making the user read JSON:
 
-The **Raw response** tab keeps the complete Amazon payload plus request method/path, environment, marketplace, request ID, rate-limit metadata, duration, and retry count. Credentials and access tokens are never included. Result and Raw response can both be copied with one click.
+- Catalog results show products with ASIN, title, brand, product type, and marketplace. Selecting a product shows all returned nested product fields underneath.
+- Orders, inventory, reports, feeds, inbound plans, and shipments are shown as readable rows with their important columns.
+- Fee estimates show fee rows and the total.
+- Single records, statuses, documents, and other responses are shown as structured field/value details.
+- Double-clicking/opening a returned workflow record can carry its ID into the appropriate follow-up screen.
+- **Next step**, pagination, and document open/download controls stay in the View so normal work does not require switching to JSON.
+
+The **Summary** tab keeps the concise text outcome and is useful for copying a short result.
+
+The **Raw response** tab is the technical/debugging view. It keeps the complete Amazon payload plus request method/path, environment, marketplace, request ID, rate-limit metadata, duration, and retry count. Credentials and access tokens are never included.
 
 ## Included SP-API workflows
 
@@ -66,6 +75,7 @@ The repository CI verifies:
 - key request-validation helpers;
 - stale pagination-token prevention and one-click pagination follow-up;
 - returned-record follow-up routing;
+- structured Catalog/Orders/error View rendering and selected-record details;
 - TLS/proxy/document/write-safety invariants and banned insecure patterns.
 
 Reads retry transient Amazon/network failures with bounded backoff. Writes are not blindly replayed after ambiguous network failures. Amazon throttling, Retry-After, request IDs, business-status failures, document URLs, and bounded report/feed previews are handled explicitly.
