@@ -48,6 +48,8 @@
   <ItemGroup>
     <Compile Include="MainForm.vb" />
     <Compile Include="ApiRequests.vb" />
+    <Compile Include="SandboxApi.vb" />
+    <Compile Include="ProductionApi.vb" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.VisualBasic.targets" />
 </Project>

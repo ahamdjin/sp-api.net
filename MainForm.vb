@@ -179,6 +179,7 @@ Public Partial Class MainForm
     Private ReadOnly btnOpenReturnedRecord As New Button()
     Private ReadOnly btnEditRequest As New Button()
     Private ReadOnly tabs As New TabControl()
+    Private ReadOnly appTooltips As New ToolTip()
 
     Private CurrentOperation As String = "catalog"
     Private LastResult As ApiResult
@@ -202,6 +203,9 @@ Public Partial Class MainForm
         MinimumSize = New Size(1120, 720)
         Size = New Size(1450, 900)
         Font = New Font("Segoe UI", 9.0F)
+        BackColor = Color.FromArgb(241, 245, 249)
+        AutoScaleMode = AutoScaleMode.Dpi
+        KeyPreview = True
         InitializeFieldValues()
         BuildUi()
         BuildOperationTree()
@@ -255,8 +259,22 @@ Public Partial Class MainForm
         SelectMarketplaceById("ATVPDKIKX0DER")
         cboEnvironment.SelectedIndex = 0
         If Endpoint() <> "https://sandbox.sellingpartnerapi-na.amazon.com" Then Throw New InvalidOperationException("North America Sandbox endpoint is incorrect.")
+        If CurrentApiEnvironment().Name <> "sandbox" OrElse CurrentApiEnvironment().IncludeCatalogLocale OrElse CurrentApiEnvironment().UploadFeedContent Then
+            Throw New InvalidOperationException("Sandbox API behavior is not isolated correctly.")
+        End If
+        If CurrentApiEnvironment().DocumentPath("/document") <> "/document" Then Throw New InvalidOperationException("Sandbox document request is incorrect.")
+        If SandboxApiEnvironment.Instance.Endpoint("eu") <> "https://sandbox.sellingpartnerapi-eu.amazon.com" Then Throw New InvalidOperationException("Europe Sandbox endpoint is incorrect.")
+        If SandboxApiEnvironment.Instance.Endpoint("fe") <> "https://sandbox.sellingpartnerapi-fe.amazon.com" Then Throw New InvalidOperationException("Far East Sandbox endpoint is incorrect.")
+        If SandboxApiEnvironment.Instance.TestConnectionPath <> "/sellers/v1/marketplaceParticipations" Then Throw New InvalidOperationException("Sandbox connection probe is incorrect.")
         cboEnvironment.SelectedIndex = 1
         If Endpoint() <> "https://sellingpartnerapi-na.amazon.com" Then Throw New InvalidOperationException("North America Production endpoint is incorrect.")
+        If CurrentApiEnvironment().Name <> "production" OrElse Not CurrentApiEnvironment().IncludeCatalogLocale OrElse Not CurrentApiEnvironment().UploadFeedContent Then
+            Throw New InvalidOperationException("Production API behavior is not isolated correctly.")
+        End If
+        If CurrentApiEnvironment().DocumentPath("/document") <> "/document?enableContentEncodingUrlHeader=true" Then Throw New InvalidOperationException("Production document request is incorrect.")
+        If ProductionApiEnvironment.Instance.Endpoint("eu") <> "https://sellingpartnerapi-eu.amazon.com" Then Throw New InvalidOperationException("Europe Production endpoint is incorrect.")
+        If ProductionApiEnvironment.Instance.Endpoint("fe") <> "https://sellingpartnerapi-fe.amazon.com" Then Throw New InvalidOperationException("Far East Production endpoint is incorrect.")
+        If ProductionApiEnvironment.Instance.TestConnectionPath <> "/sellers/v1/marketplaceParticipations" Then Throw New InvalidOperationException("Production connection probe is incorrect.")
 
         SelectMarketplaceById("A1F83G8C2ARO7P")
         If Endpoint() <> "https://sellingpartnerapi-eu.amazon.com" Then Throw New InvalidOperationException("Europe Production endpoint is incorrect.")
@@ -576,12 +594,12 @@ Public Partial Class MainForm
 
     ' -------------------- Window and controls --------------------
     Private Sub BuildUi()
-        Dim root As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 1, .RowCount = 2, .Padding = New Padding(10)}
+        Dim root As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 1, .RowCount = 2, .Padding = New Padding(12), .BackColor = Color.FromArgb(241, 245, 249)}
         root.RowStyles.Add(New RowStyle(SizeType.AutoSize))
         root.RowStyles.Add(New RowStyle(SizeType.Percent, 100.0F))
         Controls.Add(root)
 
-        Dim credentials As New GroupBox With {.Text = "Amazon credentials and environment", .Dock = DockStyle.Top, .AutoSize = True, .Padding = New Padding(10)}
+        Dim credentials As New GroupBox With {.Text = "Amazon credentials and environment", .Dock = DockStyle.Top, .AutoSize = True, .Padding = New Padding(12), .BackColor = Color.White, .ForeColor = Color.FromArgb(30, 41, 59)}
         Dim cGrid As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 6, .AutoSize = True}
         For i As Integer = 0 To 5
             cGrid.ColumnStyles.Add(New ColumnStyle(SizeType.Percent, If(i Mod 2 = 0, 12.0F, 21.333F)))
@@ -605,6 +623,8 @@ Public Partial Class MainForm
         btnTest.Text = "Test connection"
         btnTest.AutoSize = True
         btnTest.Padding = New Padding(10, 4, 10, 4)
+        btnTest.FlatStyle = FlatStyle.Flat
+        btnTest.Font = New Font("Segoe UI Semibold", 9.0F, FontStyle.Bold)
         AddHandler btnTest.Click, Async Sub(sender, e) Await TestConnectionAsync()
         cGrid.Controls.Add(btnTest, 4, 1)
 
@@ -614,6 +634,8 @@ Public Partial Class MainForm
         lblConnection.TextAlign = ContentAlignment.MiddleLeft
         lblConnection.Text = "Not tested"
         lblConnection.ForeColor = Color.DimGray
+        lblConnection.BackColor = Color.FromArgb(248, 250, 252)
+        lblConnection.Padding = New Padding(8, 0, 8, 0)
         cGrid.Controls.Add(lblConnection, 5, 1)
 
         chkShowSecrets.Text = "Show Client Secret and Refresh Token"
@@ -641,20 +663,29 @@ Public Partial Class MainForm
         AddHandler cboEnvironment.SelectedIndexChanged, Sub(sender, e)
                                                             InvalidateConnectionState()
                                                             BuildOperationFields()
+                                                            ApplyEnvironmentVisualState()
                                                         End Sub
         AddHandler cboMarketplace.SelectedIndexChanged, Sub(sender, e)
                                                             InvalidateConnectionState()
                                                             BuildOperationFields()
                                                         End Sub
         InvalidateConnectionState()
+        ApplyEnvironmentVisualState()
         root.Controls.Add(credentials, 0, 0)
 
-        Dim mainSplit As New SplitContainer With {.Dock = DockStyle.Fill, .Orientation = Orientation.Vertical, .SplitterDistance = 245, .FixedPanel = FixedPanel.Panel1}
+        Dim mainSplit As New SplitContainer With {.Dock = DockStyle.Fill, .Orientation = Orientation.Vertical, .SplitterDistance = 260, .FixedPanel = FixedPanel.Panel1, .SplitterWidth = 6, .BackColor = Color.FromArgb(203, 213, 225)}
         root.Controls.Add(mainSplit, 0, 1)
 
         operationTree.Dock = DockStyle.Fill
         operationTree.HideSelection = False
         operationTree.FullRowSelect = True
+        operationTree.BorderStyle = BorderStyle.None
+        operationTree.BackColor = Color.FromArgb(248, 250, 252)
+        operationTree.ForeColor = Color.FromArgb(30, 41, 59)
+        operationTree.Font = New Font("Segoe UI", 9.25F)
+        operationTree.ItemHeight = 27
+        operationTree.ShowLines = False
+        operationTree.ShowRootLines = False
         AddHandler operationTree.AfterSelect, AddressOf OperationSelected
         mainSplit.Panel1.Controls.Add(operationTree)
 
@@ -670,18 +701,19 @@ Public Partial Class MainForm
         AddHandler workspaceSplit.MouseDoubleClick, AddressOf WorkspaceSplitterDoubleClick
         mainSplit.Panel2.Controls.Add(workspaceSplit)
 
-        Dim requestHost As New Panel With {.Dock = DockStyle.Fill, .Padding = New Padding(10)}
+        Dim requestHost As New Panel With {.Dock = DockStyle.Fill, .Padding = New Padding(14), .BackColor = Color.FromArgb(248, 250, 252)}
         workspaceSplit.Panel1.Controls.Add(requestHost)
         lblOperation.Dock = DockStyle.Top
         lblOperation.Height = 34
-        lblOperation.Font = New Font(Font, FontStyle.Bold)
-        lblOperation.Font = New Font(lblOperation.Font.FontFamily, 14.0F, FontStyle.Bold)
+        lblOperation.Font = New Font("Bahnschrift SemiBold", 15.0F, FontStyle.Bold)
+        lblOperation.ForeColor = Color.FromArgb(15, 23, 42)
         requestHost.Controls.Add(lblOperation)
 
         lblSandbox.Dock = DockStyle.Top
         lblSandbox.AutoSize = False
         lblSandbox.Height = 55
-        lblSandbox.Padding = New Padding(8)
+        lblSandbox.Padding = New Padding(12, 8, 12, 8)
+        lblSandbox.Font = New Font("Segoe UI Semibold", 9.0F, FontStyle.Bold)
         lblSandbox.BackColor = Color.FromArgb(255, 248, 220)
         lblSandbox.ForeColor = Color.FromArgb(90, 70, 0)
         requestHost.Controls.Add(lblSandbox)
@@ -691,18 +723,26 @@ Public Partial Class MainForm
         requestPanel.FlowDirection = FlowDirection.TopDown
         requestPanel.WrapContents = False
         requestPanel.AutoScroll = True
-        requestPanel.Padding = New Padding(3)
+        requestPanel.Padding = New Padding(4, 8, 8, 8)
+        requestPanel.BackColor = Color.FromArgb(248, 250, 252)
         AddHandler requestPanel.Resize, Sub(sender, e) ResizeRequestFields()
         requestHost.Controls.Add(requestPanel)
         requestPanel.BringToFront()
 
         btnRun.Dock = DockStyle.Bottom
-        btnRun.Height = 40
+        btnRun.Height = 46
         btnRun.Text = "Run request"
+        btnRun.FlatStyle = FlatStyle.Flat
+        btnRun.Font = New Font("Segoe UI Semibold", 10.0F, FontStyle.Bold)
+        btnRun.ForeColor = Color.White
+        btnRun.FlatAppearance.BorderSize = 0
+        btnRun.Cursor = Cursors.Hand
         AddHandler btnRun.Click, Async Sub(sender, e) Await RunCurrentAsync()
         requestHost.Controls.Add(btnRun)
 
         tabs.Dock = DockStyle.Fill
+        tabs.Font = New Font("Segoe UI Semibold", 9.0F, FontStyle.Bold)
+        tabs.Padding = New Point(16, 6)
         Dim viewTab As New TabPage("View")
         Dim resultTab As New TabPage("Summary")
         Dim rawTab As New TabPage("Raw response")
@@ -784,6 +824,11 @@ Public Partial Class MainForm
         }
         AddHandler btnCopyRaw.Click, Sub(sender, e) CopyTextToClipboard(txtRaw.Text, "Raw response")
         rawLayout.Controls.Add(btnCopyRaw, 0, 1)
+
+        appTooltips.SetToolTip(btnRun, "Run the selected operation (Ctrl+Enter)")
+        appTooltips.SetToolTip(btnTest, "Verify the selected environment and marketplace credentials")
+        appTooltips.SetToolTip(cboEnvironment, "Sandbox uses Amazon test fixtures; Production uses the live seller account")
+        AddHandler Me.KeyDown, AddressOf MainFormKeyDown
     End Sub
 
     Private Sub BuildResultView(viewTab As TabPage)
@@ -920,6 +965,7 @@ Public Partial Class MainForm
         catalogSectionsPanel.BackColor = canvas
         catalogSectionsPanel.Visible = False
         viewDetailLayout.Controls.Add(catalogSectionsPanel, 0, 2)
+        AddHandler viewSplit.Panel2.Resize, Sub(sender, e) ResizeCatalogSectionCards()
 
         Dim viewActions As New FlowLayoutPanel With {
             .Dock = DockStyle.Fill,
@@ -949,6 +995,9 @@ Public Partial Class MainForm
         btnOpenReturnedRecord.Text = "Open selected"
         btnOpenReturnedRecord.AutoSize = True
         btnOpenReturnedRecord.Padding = New Padding(8, 2, 8, 2)
+        btnOpenReturnedRecord.FlatStyle = FlatStyle.Flat
+        btnOpenReturnedRecord.BackColor = Color.White
+        btnOpenReturnedRecord.FlatAppearance.BorderColor = Color.FromArgb(148, 163, 184)
         btnOpenReturnedRecord.Visible = False
         AddHandler btnOpenReturnedRecord.Click, AddressOf OpenReturnedRecord
         viewActions.Controls.Add(btnOpenReturnedRecord)
@@ -956,6 +1005,10 @@ Public Partial Class MainForm
         btnNextStep.Text = "Next step"
         btnNextStep.AutoSize = True
         btnNextStep.Padding = New Padding(8, 2, 8, 2)
+        btnNextStep.FlatStyle = FlatStyle.Flat
+        btnNextStep.BackColor = accent
+        btnNextStep.ForeColor = Color.White
+        btnNextStep.FlatAppearance.BorderColor = accent
         btnNextStep.Visible = False
         AddHandler btnNextStep.Click, AddressOf OpenNextStep
         viewActions.Controls.Add(btnNextStep)
@@ -968,6 +1021,9 @@ Public Partial Class MainForm
         btnOpenDocument.Text = "Open / download document"
         btnOpenDocument.AutoSize = True
         btnOpenDocument.Padding = New Padding(8, 2, 8, 2)
+        btnOpenDocument.FlatStyle = FlatStyle.Flat
+        btnOpenDocument.BackColor = Color.White
+        btnOpenDocument.FlatAppearance.BorderColor = Color.FromArgb(148, 163, 184)
         btnOpenDocument.Visible = False
         AddHandler btnOpenDocument.Click, AddressOf OpenDocument
         viewActions.Controls.Add(btnOpenDocument)
@@ -1195,12 +1251,13 @@ Public Partial Class MainForm
         Dim bounds = workspaceSplit.SplitterRectangle
         If bounds.Width <= 0 OrElse bounds.Height <= 0 Then Return
 
-        Using splitterBrush As New SolidBrush(Color.FromArgb(37, 99, 235))
+        Dim splitterColor = If(IsSandbox(), Color.FromArgb(37, 99, 235), Color.FromArgb(185, 28, 28))
+        Using splitterBrush As New SolidBrush(splitterColor)
             e.Graphics.FillRectangle(splitterBrush, bounds)
         End Using
         Using labelFont As New Font("Segoe UI Semibold", 7.5F, FontStyle.Bold),
               labelBrush As New SolidBrush(Color.White)
-            Dim label = "DRAG TO RESIZE   |   DOUBLE-CLICK FOR FULL RESULTS"
+            Dim label = EnvironmentName().ToUpperInvariant() & "   |   DRAG TO RESIZE   |   DOUBLE-CLICK FOR FULL RESULTS"
             Dim measured = e.Graphics.MeasureString(label, labelFont)
             Dim x = bounds.Left + Math.Max(8.0F, (bounds.Width - measured.Width) / 2.0F)
             Dim y = bounds.Top + Math.Max(0.0F, (bounds.Height - measured.Height) / 2.0F)
@@ -1258,7 +1315,7 @@ Public Partial Class MainForm
         FieldValues("confirmed") = False
         Dim operation = Operations.First(Function(x) x.Id = id)
         lblOperation.Text = operation.Label
-        btnRun.Text = If(operation.Kind = "legacy", "Legacy utility unavailable", "Run " & operation.Label)
+        UpdateRunButtonPresentation()
         BuildOperationFields()
         txtResult.Text = If(operation.Kind = "legacy", "This legacy SQL utility is not part of the portable SP-API connection.", "Run the selected request to see a readable result here.")
         txtRaw.Text = If(operation.Kind = "legacy", "", "The complete Amazon response will appear here.")
@@ -1292,13 +1349,13 @@ Public Partial Class MainForm
         Else
             lblSandbox.Visible = True
             If IsSandbox() Then
-                lblSandbox.Text = "SANDBOX - Amazon test endpoint. Nothing is changed in Production."
-                lblSandbox.BackColor = Color.FromArgb(255, 248, 220)
-                lblSandbox.ForeColor = Color.FromArgb(90, 70, 0)
+                lblSandbox.Text = "SANDBOX  |  Amazon test endpoint using predefined fixtures. No Production data is changed."
+                lblSandbox.BackColor = Color.FromArgb(239, 246, 255)
+                lblSandbox.ForeColor = Color.FromArgb(30, 64, 175)
             Else
-                lblSandbox.Text = "PRODUCTION - Live seller account. Read requests use live data; confirmed write requests can change Amazon data."
-                lblSandbox.BackColor = Color.FromArgb(255, 238, 238)
-                lblSandbox.ForeColor = Color.FromArgb(120, 35, 35)
+                lblSandbox.Text = "PRODUCTION  |  Live seller account. Reads use live data and confirmed writes can change Amazon data."
+                lblSandbox.BackColor = Color.FromArgb(254, 242, 242)
+                lblSandbox.ForeColor = Color.FromArgb(153, 27, 27)
             End If
         End If
 
@@ -1439,6 +1496,7 @@ Public Partial Class MainForm
             Case "legacyConvert", "legacyFc"
                 AddNote("This is not an SP-API request. It depends on the old private SQL database/tables and business rules, so it remains intentionally disconnected just like the current workbench.")
         End Select
+        ApplyEnvironmentVisualState()
         requestPanel.ResumeLayout()
     End Sub
 
@@ -1448,9 +1506,9 @@ Public Partial Class MainForm
     End Sub
 
     Private Sub AddText(key As String, labelText As String, Optional required As Boolean = False, Optional multiline As Boolean = False, Optional height As Integer = 70)
-        Dim host As New Panel With {.Width = Math.Max(620, requestPanel.ClientSize.Width - 35), .Height = If(multiline, height + 26, 52), .Margin = New Padding(3, 2, 3, 5)}
-        Dim label As New Label With {.Text = labelText & If(required, " *", ""), .AutoSize = True, .Location = New Point(0, 3)}
-        Dim box As New TextBox With {.Name = key, .Tag = key, .Text = S(key), .Location = New Point(0, 23), .Width = Math.Max(580, host.Width - 8)}
+        Dim host As New Panel With {.Width = Math.Max(620, requestPanel.ClientSize.Width - 35), .Height = If(multiline, height + 29, 56), .Margin = New Padding(3, 2, 3, 7), .BackColor = requestPanel.BackColor}
+        Dim label As New Label With {.Text = labelText & If(required, " *", ""), .AutoSize = True, .Location = New Point(1, 2), .Font = New Font("Segoe UI Semibold", 9.0F, FontStyle.Bold), .ForeColor = Color.FromArgb(51, 65, 85)}
+        Dim box As New TextBox With {.Name = key, .Tag = key, .Text = S(key), .Location = New Point(0, 25), .Width = Math.Max(580, host.Width - 8), .BorderStyle = BorderStyle.FixedSingle, .Font = New Font("Segoe UI", 9.25F)}
         If multiline Then
             box.Multiline = True
             box.ScrollBars = ScrollBars.Vertical
@@ -1464,9 +1522,9 @@ Public Partial Class MainForm
     End Sub
 
     Private Sub AddChoice(key As String, labelText As String, options As IEnumerable(Of String), Optional required As Boolean = False, Optional extraHandler As EventHandler = Nothing)
-        Dim host As New Panel With {.Width = Math.Max(620, requestPanel.ClientSize.Width - 35), .Height = 52, .Margin = New Padding(3, 2, 3, 5)}
-        Dim label As New Label With {.Text = labelText & If(required, " *", ""), .AutoSize = True, .Location = New Point(0, 3)}
-        Dim combo As New ComboBox With {.Name = key, .Tag = key, .Location = New Point(0, 23), .Width = Math.Max(580, host.Width - 8), .DropDownStyle = ComboBoxStyle.DropDownList}
+        Dim host As New Panel With {.Width = Math.Max(620, requestPanel.ClientSize.Width - 35), .Height = 56, .Margin = New Padding(3, 2, 3, 7), .BackColor = requestPanel.BackColor}
+        Dim label As New Label With {.Text = labelText & If(required, " *", ""), .AutoSize = True, .Location = New Point(1, 2), .Font = New Font("Segoe UI Semibold", 9.0F, FontStyle.Bold), .ForeColor = Color.FromArgb(51, 65, 85)}
+        Dim combo As New ComboBox With {.Name = key, .Tag = key, .Location = New Point(0, 25), .Width = Math.Max(580, host.Width - 8), .DropDownStyle = ComboBoxStyle.DropDownList, .FlatStyle = FlatStyle.Flat, .Font = New Font("Segoe UI", 9.25F)}
         combo.Items.AddRange(options.Cast(Of Object)().ToArray())
         Dim value = S(key)
         If key = "fulfillment" Then value = If(B("isAmazonFulfilled"), "FBA", "Merchant")
@@ -1521,8 +1579,13 @@ Public Partial Class MainForm
             .Text = "Load Sandbox example into the form",
             .AutoSize = True,
             .Padding = New Padding(8, 3, 8, 3),
-            .Margin = New Padding(3, 2, 3, 8)
+            .Margin = New Padding(3, 2, 3, 8),
+            .FlatStyle = FlatStyle.Flat,
+            .BackColor = Color.FromArgb(239, 246, 255),
+            .ForeColor = Color.FromArgb(30, 64, 175),
+            .Cursor = Cursors.Hand
         }
+        button.FlatAppearance.BorderColor = Color.FromArgb(147, 197, 253)
         AddHandler button.Click, Sub(sender, e) LoadSandboxExample()
         requestPanel.Controls.Add(button)
     End Sub
@@ -1532,16 +1595,16 @@ Public Partial Class MainForm
             .Text = message,
             .AutoSize = True,
             .MaximumSize = New Size(Math.Max(620, requestPanel.ClientSize.Width - 35), 0),
-            .Padding = New Padding(8),
-            .BackColor = Color.FromArgb(245, 245, 245),
-            .ForeColor = Color.DimGray,
+            .Padding = New Padding(11, 9, 11, 9),
+            .BackColor = Color.FromArgb(241, 245, 249),
+            .ForeColor = Color.FromArgb(71, 85, 105),
             .Margin = New Padding(3, 8, 3, 8)
         }
         requestPanel.Controls.Add(note)
     End Sub
 
     Private Sub AddCheck(key As String, labelText As String)
-        Dim check As New CheckBox With {.Name = key, .Tag = key, .Text = labelText, .Checked = B(key), .AutoSize = True, .MaximumSize = New Size(Math.Max(620, requestPanel.ClientSize.Width - 35), 0), .Margin = New Padding(3, 7, 3, 7)}
+        Dim check As New CheckBox With {.Name = key, .Tag = key, .Text = labelText, .Checked = B(key), .AutoSize = True, .MaximumSize = New Size(Math.Max(620, requestPanel.ClientSize.Width - 35), 0), .Margin = New Padding(3, 9, 3, 9), .ForeColor = Color.FromArgb(51, 65, 85)}
         AddHandler check.CheckedChanged, Sub(sender, e) SetUserFieldValue(key, check.Checked)
         requestPanel.Controls.Add(check)
         FieldControls(key) = check
@@ -1594,6 +1657,77 @@ Public Partial Class MainForm
         Return If(IsSandbox(), "sandbox", "production")
     End Function
 
+    Private Sub MainFormKeyDown(sender As Object, e As KeyEventArgs)
+        If e.Control AndAlso e.KeyCode = Keys.Enter AndAlso btnRun.Enabled Then
+            e.SuppressKeyPress = True
+            btnRun.PerformClick()
+            Return
+        End If
+
+        If e.KeyCode = Keys.Escape AndAlso workspaceSplit.Panel1Collapsed Then
+            e.SuppressKeyPress = True
+            ShowRequestWorkspace()
+        End If
+    End Sub
+
+    Private Sub UpdateRunButtonPresentation()
+        Dim operation = Operations.FirstOrDefault(Function(item) item.Id = CurrentOperation)
+        If operation Is Nothing Then Return
+
+        If operation.Kind = "legacy" Then
+            btnRun.Text = "Legacy utility unavailable"
+            btnRun.BackColor = Color.FromArgb(100, 116, 139)
+            btnRun.AccessibleName = btnRun.Text
+            Return
+        End If
+
+        If IsSandbox() Then
+            btnRun.Text = "Run in Sandbox - " & operation.Label
+            btnRun.BackColor = Color.FromArgb(37, 99, 235)
+        Else
+            btnRun.Text = "Run LIVE - " & operation.Label
+            btnRun.BackColor = Color.FromArgb(185, 28, 28)
+        End If
+        btnRun.AccessibleName = btnRun.Text
+    End Sub
+
+    Private Sub ApplyEnvironmentVisualState()
+        If cboEnvironment.SelectedIndex < 0 Then Return
+
+        If IsSandbox() Then
+            cboEnvironment.BackColor = Color.FromArgb(239, 246, 255)
+            cboEnvironment.ForeColor = Color.FromArgb(30, 64, 175)
+            btnTest.BackColor = Color.White
+            btnTest.ForeColor = Color.FromArgb(30, 64, 175)
+            btnTest.FlatAppearance.BorderColor = Color.FromArgb(96, 165, 250)
+            workspaceSplit.BackColor = Color.FromArgb(37, 99, 235)
+            If lblSandbox.Visible Then
+                lblSandbox.BackColor = Color.FromArgb(239, 246, 255)
+                lblSandbox.ForeColor = Color.FromArgb(30, 64, 175)
+            End If
+        Else
+            cboEnvironment.BackColor = Color.FromArgb(254, 242, 242)
+            cboEnvironment.ForeColor = Color.FromArgb(153, 27, 27)
+            btnTest.BackColor = Color.White
+            btnTest.ForeColor = Color.FromArgb(153, 27, 27)
+            btnTest.FlatAppearance.BorderColor = Color.FromArgb(248, 113, 113)
+            workspaceSplit.BackColor = Color.FromArgb(185, 28, 28)
+            If lblSandbox.Visible Then
+                lblSandbox.BackColor = Color.FromArgb(254, 242, 242)
+                lblSandbox.ForeColor = Color.FromArgb(153, 27, 27)
+            End If
+        End If
+
+        UpdateRunButtonPresentation()
+        workspaceSplit.Invalidate()
+    End Sub
+
+    Private Sub SetConnectionStatus(message As String, foreground As Color, background As Color)
+        lblConnection.Text = message
+        lblConnection.ForeColor = foreground
+        lblConnection.BackColor = background
+    End Sub
+
     Private Function OperationHelp(operation As String) As String
         Select Case operation
             Case "catalog" : Return "Find a catalogue item by ASIN/SKU/other identifier, or search by keywords. Related ASIN fetching is optional."
@@ -1637,9 +1771,9 @@ Public Partial Class MainForm
         CachedAccessToken = ""
         CachedAccessTokenExpiresUtc = DateTimeOffset.MinValue
         ClearWriteConfirmation()
-        lblConnection.Text = "Not tested"
-        lblConnection.ForeColor = Color.DimGray
+        SetConnectionStatus("Not tested", Color.FromArgb(71, 85, 105), Color.FromArgb(248, 250, 252))
         If cboEnvironment.SelectedIndex >= 0 Then btnTest.Text = "Test " & EnvironmentName() & " connection"
+        ApplyEnvironmentVisualState()
     End Sub
 
     Private Sub SelectMarketplaceById(id As String)
@@ -1838,30 +1972,27 @@ Public Partial Class MainForm
             MessageBox.Show("Client ID, client secret, and refresh token are required.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning)
             Return
         End If
+        SetConnectionStatus("Testing " & EnvironmentName() & "...", Color.FromArgb(30, 64, 175), Color.FromArgb(239, 246, 255))
         ToggleBusy(True, "Testing connection...")
         Try
             Dim probe = Await TestConnectionRequestAsync()
             If Not probe.Ok Then
                 ConnectionVerified = False
-                lblConnection.Text = "Connection failed - see Result"
-                lblConnection.ForeColor = Color.DarkRed
+                SetConnectionStatus("Connection failed - see Result", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
                 ShowResult("connection", probe)
                 Return
             End If
 
             ConnectionVerified = True
-            lblConnection.Text = "Connected to " & EnvironmentName() & " - " & SelectedMarketplace().Name
-            lblConnection.ForeColor = Color.DarkGreen
+            SetConnectionStatus("Connected to " & EnvironmentName() & " - " & SelectedMarketplace().Name, Color.FromArgb(22, 101, 52), Color.FromArgb(240, 253, 244))
             ShowResult("connection", probe)
         Catch ex As AppException
             ConnectionVerified = False
-            lblConnection.Text = "Connection failed - see Result"
-            lblConnection.ForeColor = Color.DarkRed
+            SetConnectionStatus("Connection failed - see Result", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
             ShowResult("connection", LocalFailure(ex))
         Catch ex As Exception
             ConnectionVerified = False
-            lblConnection.Text = "Connection failed - see Result"
-            lblConnection.ForeColor = Color.DarkRed
+            SetConnectionStatus("Connection failed - see Result", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
             ShowResult("connection", LocalFailure(New AppException(ex.Message, 500, "CONNECTION_TEST_FAILED", ex.ToString())))
         Finally
             ToggleBusy(False, "")
@@ -1939,22 +2070,19 @@ Public Partial Class MainForm
 
         If result.Status = 401 OrElse code.Contains("invalid_grant") OrElse code.Contains("invalid_client") OrElse code.Contains("lwa_") Then
             ConnectionVerified = False
-            lblConnection.Text = "Authentication failed - see Result"
-            lblConnection.ForeColor = Color.DarkRed
+            SetConnectionStatus("Authentication failed - see Result", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
             Return
         End If
 
         If code.Contains("amazon_network_error") OrElse code.Contains("amazon_timeout") OrElse code.Contains("no_response") Then
             ConnectionVerified = False
-            lblConnection.Text = "Connection problem - see Result"
-            lblConnection.ForeColor = Color.DarkRed
+            SetConnectionStatus("Connection problem - see Result", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
             Return
         End If
 
         If result.Ok OrElse result.RequestId <> "" Then
             ConnectionVerified = True
-            lblConnection.Text = "Connected to " & EnvironmentName() & " - " & SelectedMarketplace().Name
-            lblConnection.ForeColor = Color.DarkGreen
+            SetConnectionStatus("Connected to " & EnvironmentName() & " - " & SelectedMarketplace().Name, Color.FromArgb(22, 101, 52), Color.FromArgb(240, 253, 244))
         End If
     End Sub
 
@@ -2541,6 +2669,17 @@ Public Partial Class MainForm
         AddProductSectionCard(rawCard)
 
         catalogSectionsPanel.ResumeLayout(True)
+        ResizeCatalogSectionCards()
+    End Sub
+
+    Private Sub ResizeCatalogSectionCards()
+        If Not catalogSectionsPanel.Visible Then Return
+        Dim pageWidth = Math.Max(620, viewSplit.Panel2.ClientSize.Width - 54)
+        catalogSectionsPanel.Width = pageWidth + catalogSectionsPanel.Padding.Horizontal
+        For Each control As Control In catalogSectionsPanel.Controls
+            Dim card = TryCast(control, TableLayoutPanel)
+            If card IsNot Nothing Then card.Width = pageWidth
+        Next
     End Sub
 
     Private Function CreateProductSection(title As String, count As Integer, width As Integer) As TableLayoutPanel

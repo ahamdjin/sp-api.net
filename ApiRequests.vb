@@ -86,15 +86,35 @@ Public Partial Class MainForm
     Private Const CoreOrderData As String = "PROCEEDS,EXPENSE,PROMOTION,CANCELLATION,FULFILLMENT,PACKAGES,TAX,PAYMENT,FULFILLMENT_ORDERS"
     Private Const DefaultCatalogData As String = "attributes,classifications,dimensions,identifiers,images,productTypes,relationships,salesRanks,summaries,vendorDetails"
     Private Const PreviewLimit As Integer = 2 * 1024 * 1024
+    Private Const LwaTokenEndpoint As String = "https://api.amazon.com/auth/o2/token"
+    Private Const SpApiUserAgent As String = "SP-API-Workbench/1.3 (Language=VB.NET; Platform=.NET Framework 4.7.2)"
+
+    Private MustInherit Class ApiEnvironmentProfile
+        Public MustOverride ReadOnly Property Name As String
+        Public MustOverride ReadOnly Property TestConnectionPath As String
+        Public MustOverride ReadOnly Property IncludeCatalogLocale As Boolean
+        Public MustOverride ReadOnly Property IncludeCatalogPageSize As Boolean
+        Public MustOverride ReadOnly Property UploadFeedContent As Boolean
+        Public MustOverride ReadOnly Property RejectRetiredListingFeeds As Boolean
+        Public MustOverride ReadOnly Property ValidateMarketplaceRegion As Boolean
+        Public MustOverride ReadOnly Property FeedVerificationMessage As String
+        Public MustOverride Function Endpoint(region As String) As String
+        Public MustOverride Function DocumentPath(path As String) As String
+    End Class
+
+    Private Function CurrentApiEnvironment() As ApiEnvironmentProfile
+        Return If(IsSandbox(),
+                  DirectCast(SandboxApiEnvironment.Instance, ApiEnvironmentProfile),
+                  DirectCast(ProductionApiEnvironment.Instance, ApiEnvironmentProfile))
+    End Function
 
     Private Function Endpoint() As String
-        Dim prefix = If(IsSandbox(), "https://sandbox.sellingpartnerapi-", "https://sellingpartnerapi-")
-        Return prefix & SelectedMarketplace().Region & ".amazon.com"
+        Return CurrentApiEnvironment().Endpoint(SelectedMarketplace().Region)
     End Function
 
     Private Async Function TestConnectionRequestAsync() As Task(Of ApiResult)
         Dim token = Await GetAccessTokenAsync(True)
-        Return Await CallSpApiAsync("/sellers/v1/marketplaceParticipations", HttpMethod.Get, Nothing, token.Item1)
+        Return Await CallSpApiAsync(CurrentApiEnvironment().TestConnectionPath, HttpMethod.Get, Nothing, token.Item1)
     End Function
 
     ' -------------------- Operation router --------------------
@@ -108,10 +128,10 @@ Public Partial Class MainForm
             Case "reports" : Return Await ReportsAsync()
             Case "createReport" : Return Await CreateReportAsync()
             Case "report" : Return ApplyBusinessOutcome(operation, Await CallSpApiAsync("/reports/2021-06-30/reports/" & Encode(Required("reportId"))))
-            Case "reportDocument" : Return Await GetAndDownloadDocumentAsync("/reports/2021-06-30/documents/" & Encode(Required("reportDocumentId")) & If(IsSandbox(), "", "?enableContentEncodingUrlHeader=true"), "report document")
+            Case "reportDocument" : Return Await GetAndDownloadDocumentAsync(CurrentApiEnvironment().DocumentPath("/reports/2021-06-30/documents/" & Encode(Required("reportDocumentId"))), "report document")
             Case "feeds" : Return Await FeedsAsync()
             Case "feed" : Return ApplyBusinessOutcome(operation, Await CallSpApiAsync("/feeds/2021-06-30/feeds/" & Encode(Required("feedId"))))
-            Case "feedDocument" : Return Await GetAndDownloadDocumentAsync("/feeds/2021-06-30/documents/" & Encode(Required("feedDocumentId")) & If(IsSandbox(), "", "?enableContentEncodingUrlHeader=true"), "feed processing report")
+            Case "feedDocument" : Return Await GetAndDownloadDocumentAsync(CurrentApiEnvironment().DocumentPath("/feeds/2021-06-30/documents/" & Encode(Required("feedDocumentId"))), "feed processing report")
             Case "submitFeed" : Return ApplyBusinessOutcome(operation, Await SubmitFeedAsync())
             Case "inboundPlans" : Return Await InboundPlansAsync()
             Case "inboundPlan" : Return Await CallSpApiAsync("/inbound/fba/2024-03-20/inboundPlans/" & Encode(Required("inboundPlanId")))
@@ -146,7 +166,7 @@ Public Partial Class MainForm
             Dim q As New List(Of KeyValuePair(Of String, String)) From {
                 QPair("marketplaceIds", marketplace.Id), QPair("includedData", included)
             }
-            If Not IsSandbox() Then q.Add(QPair("locale", marketplace.Locale))
+            If CurrentApiEnvironment().IncludeCatalogLocale Then q.Add(QPair("locale", marketplace.Locale))
             Dim exact = Await CallSpApiAsync("/catalog/2022-04-01/items/" & Encode(identifiers(0)) & "?" & BuildQuery(q), HttpMethod.Get, Nothing, token)
             If exact.Ok Then
                 exact.Data = New Dictionary(Of String, Object) From {{"numberOfResults", 1}, {"items", New Object() {exact.Data}}}
@@ -157,13 +177,15 @@ Public Partial Class MainForm
         Dim params As New List(Of KeyValuePair(Of String, String)) From {
             QPair("marketplaceIds", marketplace.Id), QPair("includedData", included)
         }
-        If Not IsSandbox() Then
+        If CurrentApiEnvironment().IncludeCatalogLocale Then
             params.Add(QPair("locale", marketplace.Locale))
+        End If
+        If CurrentApiEnvironment().IncludeCatalogPageSize Then
             params.Add(QPair("pageSize", IntField("catalogPageSize", 1, 20, 20).ToString(CultureInfo.InvariantCulture)))
         End If
         If mode = "keywords" Then
             params.Add(QPair("keywords", query))
-            If Not IsSandbox() Then params.Add(QPair("keywordsLocale", marketplace.Locale))
+            If CurrentApiEnvironment().IncludeCatalogLocale Then params.Add(QPair("keywordsLocale", marketplace.Locale))
             AddCsvParam(params, "brandNames", S("brandNames"), Integer.MaxValue)
             AddCsvParam(params, "classificationIds", S("classificationIds"), Integer.MaxValue)
             AddOptional(params, "pageToken", S("pageToken"))
@@ -237,7 +259,7 @@ Public Partial Class MainForm
 
     Private Async Function GetCatalogItemAsync(asin As String, included As String, accessToken As String) As Task(Of ApiResult)
         Dim q As New List(Of KeyValuePair(Of String, String)) From {QPair("marketplaceIds", SelectedMarketplace().Id), QPair("includedData", included)}
-        If Not IsSandbox() Then q.Add(QPair("locale", SelectedMarketplace().Locale))
+        If CurrentApiEnvironment().IncludeCatalogLocale Then q.Add(QPair("locale", SelectedMarketplace().Locale))
         Return Await CallSpApiAsync("/catalog/2022-04-01/items/" & Encode(asin) & "?" & BuildQuery(q), HttpMethod.Get, Nothing, accessToken)
     End Function
 
@@ -245,7 +267,8 @@ Public Partial Class MainForm
         Dim q As New List(Of KeyValuePair(Of String, String)) From {
             QPair("identifiers", String.Join(",", asins)), QPair("identifiersType", "ASIN"), QPair("marketplaceIds", SelectedMarketplace().Id), QPair("includedData", included)
         }
-        If Not IsSandbox() Then q.Add(QPair("locale", SelectedMarketplace().Locale)) : q.Add(QPair("pageSize", "20"))
+        If CurrentApiEnvironment().IncludeCatalogLocale Then q.Add(QPair("locale", SelectedMarketplace().Locale))
+        If CurrentApiEnvironment().IncludeCatalogPageSize Then q.Add(QPair("pageSize", "20"))
         Return Await CallSpApiAsync("/catalog/2022-04-01/items?" & BuildQuery(q), HttpMethod.Get, Nothing, accessToken)
     End Function
 
@@ -440,7 +463,7 @@ Public Partial Class MainForm
     Private Async Function SubmitFeedAsync() As Task(Of ApiResult)
         Dim feedType = Required("feedType")
         Dim removed = New HashSet(Of String)({"POST_PRODUCT_DATA", "POST_INVENTORY_AVAILABILITY_DATA", "POST_PRODUCT_OVERRIDES_DATA", "POST_PRODUCT_PRICING_DATA", "POST_PRODUCT_IMAGE_DATA", "POST_PRODUCT_RELATIONSHIP_DATA", "POST_FLAT_FILE_INVLOADER_DATA", "POST_FLAT_FILE_BOOKLOADER_DATA", "POST_FLAT_FILE_CONVERGENCE_LISTINGS_DATA", "POST_FLAT_FILE_LISTINGS_DATA", "POST_FLAT_FILE_PRICEANDQUANTITYONLY_UPDATE_DATA", "POST_UIEE_BOOKLOADER_DATA"}, StringComparer.Ordinal)
-        If Not IsSandbox() AndAlso removed.Contains(feedType) Then Throw New AppException("This legacy listings feed type was removed by Amazon on July 31, 2025. Use JSON_LISTINGS_FEED in Production.", 400, "REMOVED_LISTING_FEED_TYPE")
+        If CurrentApiEnvironment().RejectRetiredListingFeeds AndAlso removed.Contains(feedType) Then Throw New AppException("This legacy listings feed type was removed by Amazon on July 31, 2025. Use JSON_LISTINGS_FEED in Production.", 400, "REMOVED_LISTING_FEED_TYPE")
         Dim contentType = If(S("contentType") = "", "application/json; charset=UTF-8", S("contentType"))
         ValidateContentType(contentType)
         Dim content = Required("content")
@@ -456,7 +479,7 @@ Public Partial Class MainForm
         Dim url = StringValue(GetValue(docData, "url"))
         Dim docId = StringValue(GetValue(docData, "feedDocumentId"))
         If url = "" OrElse docId = "" Then Throw New AppException("Amazon did not return a feed upload URL and document ID", 502, "FEED_UPLOAD_URL_MISSING")
-        If Not IsSandbox() Then
+        If CurrentApiEnvironment().UploadFeedContent Then
             ValidateAmazonDocumentUrl(url, "feed upload")
             Using req As New HttpRequestMessage(HttpMethod.Put, url)
                 req.Content = New StringContent(content, Encoding.UTF8)
@@ -470,7 +493,7 @@ Public Partial Class MainForm
         If created.Ok Then
             Dim data = AsDict(created.Data)
             data("inputFeedDocumentId") = docId
-            data("verification") = If(IsSandbox(), "Static Sandbox validates Amazon's predefined examples and does not persist the upload like Production.", "Poll Feed status until DONE or FATAL, then inspect resultFeedDocumentId.")
+            data("verification") = CurrentApiEnvironment().FeedVerificationMessage
             created.Data = data
         End If
         Return created
@@ -695,7 +718,7 @@ Public Partial Class MainForm
             {"grant_type", "refresh_token"}, {"refresh_token", txtRefreshToken.Text.Trim()}, {"client_id", txtClientId.Text.Trim()}, {"client_secret", txtClientSecret.Text.Trim()}
         }
         Dim outcome = Await SendWithRetryAsync(Function()
-                                                   Dim req As New HttpRequestMessage(HttpMethod.Post, "https://api.amazon.com/auth/o2/token")
+                                                   Dim req As New HttpRequestMessage(HttpMethod.Post, LwaTokenEndpoint)
                                                    req.Content = New FormUrlEncodedContent(pairs)
                                                    Return req
                                                End Function, RetryMode.SafePost)
@@ -721,7 +744,7 @@ Public Partial Class MainForm
         End Using
     End Function
 
-    Private Async Function CallSpApiAsync(path As String, Optional method As HttpMethod = Nothing, Optional body As Object = Nothing, Optional accessToken As String = "") As Task(Of ApiResult)
+    Private Async Function CallSpApiAsync(path As String, Optional method As HttpMethod = Nothing, Optional body As Object = Nothing, Optional accessToken As String = "", Optional allowAuthRefresh As Boolean = True) As Task(Of ApiResult)
         If method Is Nothing Then method = HttpMethod.Get
         If accessToken = "" Then accessToken = (Await GetAccessTokenAsync()).Item1
         Dim url = Endpoint() & path
@@ -734,7 +757,7 @@ Public Partial Class MainForm
                                                    req.Headers.Accept.Add(New MediaTypeWithQualityHeaderValue("application/json"))
                                                    req.Headers.TryAddWithoutValidation("x-amz-access-token", accessToken)
                                                    req.Headers.TryAddWithoutValidation("x-amz-date", DateTime.UtcNow.ToString("yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture))
-                                                   req.Headers.TryAddWithoutValidation("User-Agent", "SP-API-Workbench/1.2 (Language=VB.NET; Platform=.NET Framework 4.8)")
+                                                   req.Headers.TryAddWithoutValidation("User-Agent", SpApiUserAgent)
                                                    If body IsNot Nothing Then req.Content = New StringContent(Serializer.Serialize(body), Encoding.UTF8, "application/json")
                                                    Return req
                                                End Function, retryPolicy)
@@ -758,6 +781,10 @@ Public Partial Class MainForm
                 If result.Status = 401 Then
                     CachedAccessToken = ""
                     CachedAccessTokenExpiresUtc = DateTimeOffset.MinValue
+                    If allowAuthRefresh Then
+                        Dim refreshedToken = (Await GetAccessTokenAsync(True)).Item1
+                        Return Await CallSpApiAsync(path, method, body, refreshedToken, False)
+                    End If
                 End If
                 result.Problem = BuildProblem(result.Status, result.StatusText, data, method, Header(response, "x-amzn-errortype"))
             End If
@@ -931,7 +958,7 @@ Public Partial Class MainForm
     End Sub
 
     Private Sub ValidateMarketplaceRegions(ids As List(Of String), key As String)
-        If IsSandbox() OrElse ids.Count = 0 Then Return
+        If Not CurrentApiEnvironment().ValidateMarketplaceRegion OrElse ids.Count = 0 Then Return
         Dim selected = SelectedMarketplace()
         Dim unknown = ids.Where(Function(id) Not Marketplaces.Any(Function(m) m.Id = id)).ToList()
         If unknown.Count > 0 Then Throw New AppException(key & " contains unsupported marketplace IDs: " & String.Join(",", unknown), 400, "UNSUPPORTED_MARKETPLACE")
