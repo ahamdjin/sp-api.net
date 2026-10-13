@@ -124,8 +124,8 @@ Public Partial Class MainForm
         New OperationInfo With {.Group = "FBA inbound", .Id = "itemLabels", .Label = "Item labels"},
         New OperationInfo With {.Group = "FBA inbound", .Id = "shipmentLabels", .Label = "Shipment labels"},
         New OperationInfo With {.Group = "FBA inbound", .Id = "billOfLading", .Label = "Bill of lading"},
-        New OperationInfo With {.Group = "Legacy database", .Id = "legacyConvert", .Label = "Convert Amazon_US", .Kind = "legacy"},
-        New OperationInfo With {.Group = "Legacy database", .Id = "legacyFc", .Label = "SKU / FC bulk update", .Kind = "legacy"}
+        New OperationInfo With {.Group = "Microsoft Access database", .Id = "legacyConvert", .Label = "Convert Amazon_US", .Kind = "legacy"},
+        New OperationInfo With {.Group = "Microsoft Access database", .Id = "legacyFc", .Label = "SKU / FC bulk update", .Kind = "legacy"}
     }
 
     Private ReadOnly FieldValues As New Dictionary(Of String, Object)(StringComparer.OrdinalIgnoreCase)
@@ -536,6 +536,19 @@ Public Partial Class MainForm
         RenderResultView("orders", viewFailure)
         If Not viewSplit.Panel1Collapsed Then Throw New InvalidOperationException("Failure View should show readable details without an empty record table.")
         If viewDetails.Rows.Count = 0 Then Throw New InvalidOperationException("Failure View did not show error details.")
+
+        ' Exercise every SP-API view without any real Amazon account in CI.
+        For Each operation In Operations
+            If operation.Kind = "legacy" Then Continue For
+            Dim emptyResult As New ApiResult With {
+                .Ok = True, .Status = 200,
+                .Data = New Dictionary(Of String, Object)()
+            }
+            RenderResultView(operation.Id, emptyResult)
+            If String.IsNullOrWhiteSpace(lblViewTitle.Text) Then
+                Throw New InvalidOperationException("Result View has no heading for " & operation.Id)
+            End If
+        Next
 
         CachedAccessToken = "test-token"
         CachedAccessTokenExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(10)
@@ -1317,9 +1330,9 @@ Public Partial Class MainForm
         lblOperation.Text = operation.Label
         UpdateRunButtonPresentation()
         BuildOperationFields()
-        txtResult.Text = If(operation.Kind = "legacy", "This legacy SQL utility is not part of the portable SP-API connection.", "Run the selected request to see a readable result here.")
+        txtResult.Text = If(operation.Kind = "legacy", "This Microsoft Access database utility is not part of the portable SP-API connection.", "Run the selected request to see a readable result here.")
         txtRaw.Text = If(operation.Kind = "legacy", "", "The complete Amazon response will appear here.")
-        ClearResultView(If(operation.Kind = "legacy", "Legacy utility", operation.Label), If(operation.Kind = "legacy", "This private SQL utility is intentionally disconnected.", "Run the request to see the returned data here."))
+        ClearResultView(If(operation.Kind = "legacy", "Legacy utility", operation.Label), If(operation.Kind = "legacy", "This Microsoft Access utility is intentionally disconnected.", "Run the request to see the returned data here."))
         lblMeta.Text = ""
         btnOpenDocument.Visible = False
         cboDocuments.Visible = False
@@ -1494,7 +1507,7 @@ Public Partial Class MainForm
             Case "billOfLading"
                 AddText("shipmentId", "Shipment ID", True)
             Case "legacyConvert", "legacyFc"
-                AddNote("This is not an SP-API request. It depends on the old private SQL database/tables and business rules, so it remains intentionally disconnected just like the current workbench.")
+                AddNote("This is not an SP-API request. It depends on the old Microsoft Access (.accdb/.mdb) database/tables and business rules, so it remains intentionally disconnected just like the current workbench.")
         End Select
         ApplyEnvironmentVisualState()
         requestPanel.ResumeLayout()
@@ -1752,7 +1765,7 @@ Public Partial Class MainForm
             Case "itemLabels" : Return "Request FBA item labels for the entered MSKUs and quantities."
             Case "shipmentLabels" : Return "Request shipment/carton/pallet labels for an existing FBA shipment."
             Case "billOfLading" : Return "Request the bill of lading document for an existing FBA shipment."
-            Case "legacyConvert", "legacyFc" : Return "Legacy company-specific SQL utility. It is intentionally disconnected because the private database/schema was not supplied."
+            Case "legacyConvert", "legacyFc" : Return "Legacy company-specific Microsoft Access utility. It remains disconnected until the .accdb/.mdb file, table names, and existing Access queries are mapped."
         End Select
         Return ""
     End Function
@@ -2002,7 +2015,7 @@ Public Partial Class MainForm
     Private Async Function RunCurrentAsync() As Task
         SaveVisibleFieldValues()
         If CurrentOperation = "legacyConvert" OrElse CurrentOperation = "legacyFc" Then
-            MessageBox.Show("This legacy SQL utility is intentionally not connected in the portable SP-API workbench.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information)
+            MessageBox.Show("This Microsoft Access database utility is intentionally not connected in the portable SP-API workbench.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information)
             Return
         End If
         If Not CredentialsReady() Then

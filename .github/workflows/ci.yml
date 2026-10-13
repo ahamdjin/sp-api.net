@@ -1,0 +1,42 @@
+name: Windows VB.NET validation
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: microsoft/setup-msbuild@v2
+      - name: Verify two code files
+        shell: pwsh
+        run: |
+          $sources = @(Get-ChildItem -File -Filter *.vb)
+          if ($sources.Count -ne 2) { throw "Expected two VB code files, found $($sources.Count)." }
+          foreach ($name in @("MainForm.vb", "ApiRequests.vb")) {
+            if (-not (Test-Path $name)) { throw "Missing $name" }
+          }
+          $api = Get-Content "ApiRequests.vb" -Raw
+          foreach ($item in @("SandboxApiEnvironment", "ProductionApiEnvironment", "ExecuteOperationAsync", "CallSpApiAsync")) {
+            if (-not $api.Contains($item)) { throw "Missing API code: $item" }
+          }
+          $ui = Get-Content "MainForm.vb" -Raw
+          foreach ($item in @("RenderResultView", "RenderCatalogView", "RenderOrdersView", "RenderReportsView", "RenderFeesView", "RenderInventoryView", "RunCiSelfTest")) {
+            if (-not $ui.Contains($item)) { throw "Missing View UI: $item" }
+          }
+      - name: Build Debug
+        run: msbuild SP-API.NET.sln /m /p:Configuration=Debug /p:Platform="Any CPU"
+      - name: Build Release
+        run: msbuild SP-API.NET.sln /m /p:Configuration=Release /p:Platform="Any CPU"
+      - name: Exercise offline UI and request validation
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path "bin\Debug\SP-API.NET.exe"
+          $env:SP_API_CI_SMOKE = "1"
+          $p = Start-Process -FilePath $exe -PassThru -Wait
+          if ($p.ExitCode -ne 0) {
+            $log = Join-Path (Split-Path $exe) "smoke-error.txt"
+            if (Test-Path $log) { Get-Content $log }
+            throw "WinForms self-test failed: $($p.ExitCode)"
+          }
