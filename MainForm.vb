@@ -537,6 +537,67 @@ Public Partial Class MainForm
         If Not viewSplit.Panel1Collapsed Then Throw New InvalidOperationException("Failure View should show readable details without an empty record table.")
         If viewDetails.Rows.Count = 0 Then Throw New InvalidOperationException("Failure View did not show error details.")
 
+        ' Representative business result views: amounts, IDs, statuses and selected details.
+        Dim feesView As New ApiResult With {
+            .Ok = True, .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"payload", New Dictionary(Of String, Object) From {
+                    {"FeesEstimateResult", New Dictionary(Of String, Object) From {
+                        {"Status", "Success"},
+                        {"FeesEstimate", New Dictionary(Of String, Object) From {
+                            {"TotalFeesEstimate", New Dictionary(Of String, Object) From {{"CurrencyCode", "USD"}, {"Amount", 3.45D}}},
+                            {"FeeDetailList", New Object() {
+                                New Dictionary(Of String, Object) From {
+                                    {"FeeType", "ReferralFee"},
+                                    {"FinalFee", New Dictionary(Of String, Object) From {{"CurrencyCode", "USD"}, {"Amount", 3.45D}}}
+                                }
+                            }}
+                        }}
+                    }}
+                }}
+            }
+        }
+        RenderResultView("fees", feesView)
+        If viewGrid.Rows.Count <> 1 Then Throw New InvalidOperationException("Fees View must show individual fees.")
+        If Not lblViewSubtitle.Text.Contains("USD") Then Throw New InvalidOperationException("Fees View must show currency and total.")
+
+        Dim reportsView As New ApiResult With {
+            .Ok = True, .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"reports", New Object() {
+                    New Dictionary(Of String, Object) From {{"reportId", "REPORT-1"}, {"reportType", "GET_MERCHANT_LISTINGS_ALL_DATA"}, {"processingStatus", "DONE"}},
+                    New Dictionary(Of String, Object) From {{"reportId", "REPORT-2"}, {"processingStatus", "IN_PROGRESS"}}
+                }}
+            }
+        }
+        RenderResultView("reports", reportsView)
+        If viewGrid.Rows.Count <> 2 Then Throw New InvalidOperationException("Reports View lost a returned report.")
+        If Convert.ToString(viewGrid.Rows(0).Cells(0).Value, CultureInfo.InvariantCulture) <> "REPORT-1" Then Throw New InvalidOperationException("Reports View must show the report ID.")
+
+        Dim feedsView As New ApiResult With {
+            .Ok = True, .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"feeds", New Object() {
+                    New Dictionary(Of String, Object) From {{"feedId", "FEED-1"}, {"feedType", "JSON_LISTINGS_FEED"}, {"processingStatus", "DONE"}, {"resultFeedDocumentId", "DOCUMENT-1"}}
+                }}
+            }
+        }
+        RenderResultView("feeds", feedsView)
+        If viewGrid.Rows.Count <> 1 Then Throw New InvalidOperationException("Feeds View lost a returned feed.")
+        If Convert.ToString(viewGrid.Rows(0).Cells(4).Value, CultureInfo.InvariantCulture) <> "DOCUMENT-1" Then Throw New InvalidOperationException("Feeds View must show the processing document ID.")
+
+        Dim plansView As New ApiResult With {
+            .Ok = True, .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"inboundPlans", New Object() {
+                    New Dictionary(Of String, Object) From {{"inboundPlanId", "PLAN-1"}, {"name", "Test Plan"}, {"status", "ACTIVE"}}
+                }}
+            }
+        }
+        RenderResultView("inboundPlans", plansView)
+        If viewGrid.Rows.Count <> 1 Then Throw New InvalidOperationException("Inbound View lost the plan.")
+        If Convert.ToString(viewGrid.Rows(0).Cells(0).Value, CultureInfo.InvariantCulture) <> "PLAN-1" Then Throw New InvalidOperationException("Inbound View must show the plan ID.")
+
         ' Exercise every SP-API view without any real Amazon account in CI.
         For Each operation In Operations
             If operation.Kind = "legacy" Then Continue For
