@@ -2845,6 +2845,14 @@ Public Partial Class MainForm
         Return rows
     End Function
 
+    Private Function HasCatalogContent(value As Object) As Boolean
+        If value Is Nothing Then Return False
+        Dim dict = TryCast(value, Dictionary(Of String, Object))
+        If dict IsNot Nothing Then Return dict.Count > 0
+        If TypeOf value Is Object() OrElse TypeOf value Is ArrayList OrElse TypeOf value Is IEnumerable(Of Object) Then Return ListValue(value).Count > 0
+        Return Not String.IsNullOrWhiteSpace(ViewValue(value))
+    End Function
+
     #End Region
 
     #Region "10 - Operation-specific result displays"
