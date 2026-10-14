@@ -23,8 +23,7 @@ Imports System.Web.Script.Serialization
 ' Amazon/LWA requests, request validation, retries, documents, and API error handling.
 Public Partial Class MainForm
 
-    ' -------------------- Shared API types and HTTP client --------------------
-
+    #Region "01 - API models and HTTP configuration"
     Private Class ApiProblem
         Public Property Code As String = ""
         Public Property Message As String = ""
@@ -117,7 +116,9 @@ Public Partial Class MainForm
         Return Await CallSpApiAsync(CurrentApiEnvironment().TestConnectionPath, HttpMethod.Get, Nothing, token.Item1)
     End Function
 
-    ' -------------------- Operation router --------------------
+    #End Region
+
+    #Region "02 - Operation router"
     Private Async Function ExecuteOperationAsync(operation As String) As Task(Of ApiResult)
         Select Case operation
             Case "catalog" : Return Await CatalogAsync()
@@ -146,7 +147,9 @@ Public Partial Class MainForm
         End Select
     End Function
 
-    ' -------------------- Catalog --------------------
+    #End Region
+
+    #Region "03 - Catalogue and product families"
     Private Async Function CatalogAsync() As Task(Of ApiResult)
         Dim marketplace = SelectedMarketplace()
         Dim mode = Required("catalogMode")
@@ -305,7 +308,9 @@ Public Partial Class MainForm
         Return String.Join(",", entries)
     End Function
 
-    ' -------------------- Fees, inventory, and orders --------------------
+    #End Region
+
+    #Region "04 - Fees, inventory and orders"
     Private Async Function FeesAsync() As Task(Of ApiResult)
         Dim idType = Required("feeIdType")
         Dim identifier = Required("feeIdentifier")
@@ -402,7 +407,9 @@ Public Partial Class MainForm
         Return If(B("includeOrderPii"), "BUYER,RECIPIENT," & CoreOrderData, CoreOrderData)
     End Function
 
-    ' -------------------- Reports and feeds --------------------
+    #End Region
+
+    #Region "05 - Reports and feeds"
     Private Async Function ReportsAsync() As Task(Of ApiResult)
         Dim nextToken = S("reportNextToken")
         Dim q As New List(Of KeyValuePair(Of String, String))()
@@ -499,7 +506,9 @@ Public Partial Class MainForm
         Return created
     End Function
 
-    ' -------------------- Fulfillment Inbound --------------------
+    #End Region
+
+    #Region "06 - Inbound plans and labels"
     Private Async Function InboundPlansAsync() As Task(Of ApiResult)
         Dim q As New List(Of KeyValuePair(Of String, String))()
         If S("pageSize") <> "" Then q.Add(QPair("pageSize", IntField("pageSize", 1, 30).ToString(CultureInfo.InvariantCulture)))
@@ -586,7 +595,9 @@ Public Partial Class MainForm
         Return Await CallSpApiAsync("/fba/inbound/v0/shipments/" & Encode(Required("shipmentId")) & "/labels?" & BuildQuery(q))
     End Function
 
-    ' -------------------- Documents and Amazon business outcomes --------------------
+    #End Region
+
+    #Region "07 - Documents and business outcomes"
     Private Async Function GetAndDownloadDocumentAsync(path As String, label As String) As Task(Of ApiResult)
         Dim metadata = Await CallSpApiAsync(path)
         If Not metadata.Ok Then Return metadata
@@ -707,7 +718,9 @@ Public Partial Class MainForm
         Return result
     End Function
 
-    ' -------------------- LWA authentication and SP-API transport --------------------
+    #End Region
+
+    #Region "08 - LWA, HTTP transport and retries"
     Private Async Function GetAccessTokenAsync(Optional forceRefresh As Boolean = False) As Task(Of Tuple(Of String, Integer))
         If Not forceRefresh AndAlso CachedAccessToken <> "" AndAlso CachedAccessTokenExpiresUtc > DateTimeOffset.UtcNow.AddSeconds(60) Then
             Dim remaining = Math.Max(1, CInt((CachedAccessTokenExpiresUtc - DateTimeOffset.UtcNow).TotalSeconds))
@@ -750,9 +763,7 @@ Public Partial Class MainForm
         Dim url = Endpoint() & path
         Dim retryPolicy = If(method = HttpMethod.Get, RetryMode.ReadRequest, RetryMode.WriteRequest)
         Dim sw = Stopwatch.StartNew()
-        Dim outcome As Tuple(Of HttpResponseMessage, Integer)
-        Try
-            outcome = Await SendWithRetryAsync(Function()
+        Dim outcome = Await SendWithRetryAsync(Function()
                                                    Dim req As New HttpRequestMessage(method, url)
                                                    req.Headers.Accept.Add(New MediaTypeWithQualityHeaderValue("application/json"))
                                                    req.Headers.TryAddWithoutValidation("x-amz-access-token", accessToken)
@@ -761,10 +772,6 @@ Public Partial Class MainForm
                                                    If body IsNot Nothing Then req.Content = New StringContent(Serializer.Serialize(body), Encoding.UTF8, "application/json")
                                                    Return req
                                                End Function, retryPolicy)
-        Catch ex As Exception
-            sw.Stop()
-            Throw
-        End Try
 
         Using response = outcome.Item1
             sw.Stop()
@@ -948,7 +955,9 @@ Public Partial Class MainForm
         Return ""
     End Function
 
-    ' -------------------- Request validation and helpers --------------------
+    #End Region
+
+    #Region "09 - Input and URL validation"
     Private Sub ValidateAmazonDocumentUrl(value As String, label As String)
         Dim uri As Uri = Nothing
         If Not Uri.TryCreate(value, UriKind.Absolute, uri) Then Throw New AppException("Amazon returned an invalid URL for the " & label, 502, "INVALID_DOCUMENT_URL")
@@ -992,6 +1001,9 @@ Public Partial Class MainForm
         Next
     End Sub
 
+    #End Region
+
+    #Region "10 - Data parsing and request helpers"
     Private Function ParseItems(value As String, maxItems As Integer, maxQuantity As Integer) As List(Of Object)
         Dim output As New List(Of Object)()
         For Each rawLine In value.Split({ControlChars.Cr, ControlChars.Lf}, StringSplitOptions.RemoveEmptyEntries)
@@ -1208,7 +1220,9 @@ Public Partial Class MainForm
         End Try
     End Function
 
-    ' -------------------- Error normalization for the view --------------------
+    #End Region
+
+    #Region "11 - Friendly errors"
     Private Function LocalFailure(ex As AppException) As ApiResult
         Dim action = "Correct the request values and run the operation again."
         Dim retryable = False
@@ -1248,7 +1262,9 @@ Public Partial Class MainForm
         }
     End Function
 
-    ' Sandbox endpoint and request profile
+    #End Region
+
+    #Region "12 - Sandbox environment"
 Private NotInheritable Class SandboxApiEnvironment
         Inherits ApiEnvironmentProfile
 
@@ -1314,7 +1330,9 @@ Private NotInheritable Class SandboxApiEnvironment
         End Function
     End Class
 
-    ' Production endpoint and request profile
+    #End Region
+
+    #Region "13 - Production environment"
 Private NotInheritable Class ProductionApiEnvironment
         Inherits ApiEnvironmentProfile
 
@@ -1379,5 +1397,7 @@ Private NotInheritable Class ProductionApiEnvironment
             Return path & "?enableContentEncodingUrlHeader=true"
         End Function
     End Class
+
+    #End Region
 
 End Class
