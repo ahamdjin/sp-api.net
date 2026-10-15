@@ -3662,7 +3662,7 @@ Public Partial Class MainForm
 
     Private Function SelectedCatalogItemForDatabase() As Dictionary(Of String, Object)
         If CurrentViewOperation <> "catalog" OrElse LastResult Is Nothing OrElse Not LastResult.Ok OrElse
-           CatalogResultEnvironment <> "Production" OrElse IsSandbox() Then Return Nothing
+           CatalogResultEnvironment <> "production" OrElse IsSandbox() Then Return Nothing
         If viewGrid.SelectedRows.Count > 0 Then Return AsDict(viewGrid.SelectedRows(0).Tag)
         Dim items = ListValue(GetValue(AsDict(LastResult.Data), "items"))
         If items.Count = 1 Then Return AsDict(items(0))
