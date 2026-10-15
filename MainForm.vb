@@ -183,6 +183,7 @@ Public Partial Class MainForm
     Private ReadOnly lblAccessStatus As New Label()
     Private AccessFilePath As String = ""
     Private AccessVerified As Boolean
+    Private CatalogResultEnvironment As String = ""
     Private ReadOnly tabs As New TabControl()
     Private ReadOnly appTooltips As New ToolTip()
 
@@ -780,6 +781,7 @@ Public Partial Class MainForm
                                                             InvalidateConnectionState()
                                                             BuildOperationFields()
                                                             ApplyEnvironmentVisualState()
+                                                            UpdateAccessControls()
                                                         End Sub
         AddHandler cboMarketplace.SelectedIndexChanged, Sub(sender, e)
                                                             InvalidateConnectionState()
@@ -3659,7 +3661,8 @@ Public Partial Class MainForm
     End Function
 
     Private Function SelectedCatalogItemForDatabase() As Dictionary(Of String, Object)
-        If CurrentViewOperation <> "catalog" OrElse LastResult Is Nothing OrElse Not LastResult.Ok Then Return Nothing
+        If CurrentViewOperation <> "catalog" OrElse LastResult Is Nothing OrElse Not LastResult.Ok OrElse
+           CatalogResultEnvironment <> "Production" OrElse IsSandbox() Then Return Nothing
         If viewGrid.SelectedRows.Count > 0 Then Return AsDict(viewGrid.SelectedRows(0).Tag)
         Dim items = ListValue(GetValue(AsDict(LastResult.Data), "items"))
         If items.Count = 1 Then Return AsDict(items(0))
@@ -3709,6 +3712,7 @@ Public Partial Class MainForm
     #Region "13 - Summaries, documents and follow-up actions"
     Private Sub ShowResult(operation As String, result As ApiResult)
         LastResult = result
+        CatalogResultEnvironment = If(operation = "catalog" AndAlso result.Ok, EnvironmentName(), "")
         lblMeta.Text = result.Status.ToString(CultureInfo.InvariantCulture) & " " & result.StatusText & If(result.DurationMs > 0, "  |  " & result.DurationMs.ToString(CultureInfo.InvariantCulture) & " ms", "") & If(result.RequestId <> "", "  |  Request " & result.RequestId, "") & If(result.RateLimit <> "", "  |  " & result.RateLimit & " req/s", "")
         Dim requestInfo As New Dictionary(Of String, Object) From {
             {"method", If(result.RequestMethod = "", Nothing, result.RequestMethod)},
