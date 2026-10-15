@@ -177,6 +177,12 @@ Public Partial Class MainForm
     Private ReadOnly cboReturnedRecords As New ComboBox()
     Private ReadOnly btnOpenReturnedRecord As New Button()
     Private ReadOnly btnEditRequest As New Button()
+    Private ReadOnly btnChooseAccess As New Button()
+    Private ReadOnly btnTestAccess As New Button()
+    Private ReadOnly btnSaveAccess As New Button()
+    Private ReadOnly lblAccessStatus As New Label()
+    Private AccessFilePath As String = ""
+    Private AccessVerified As Boolean
     Private ReadOnly tabs As New TabControl()
     Private ReadOnly appTooltips As New ToolTip()
 
@@ -906,6 +912,9 @@ Public Partial Class MainForm
         appTooltips.SetToolTip(btnRun, "Run the selected operation (Ctrl+Enter)")
         appTooltips.SetToolTip(btnTest, "Verify the selected environment and marketplace credentials")
         appTooltips.SetToolTip(cboEnvironment, "Sandbox uses Amazon test fixtures; Production uses the live seller account")
+        appTooltips.SetToolTip(btnChooseAccess, "Select an existing Access .accdb or .mdb file. Nothing is changed by selecting it.")
+        appTooltips.SetToolTip(btnTestAccess, "Verify Access and InventoryDimensions read access without writing data.")
+        appTooltips.SetToolTip(btnSaveAccess, "Preview a selected catalogue ASIN before an explicit database update. Production only.")
         AddHandler Me.KeyDown, AddressOf MainFormKeyDown
     End Sub
 
@@ -1101,6 +1110,30 @@ Public Partial Class MainForm
         btnOpenDocument.Visible = False
         AddHandler btnOpenDocument.Click, AddressOf OpenDocument
         viewActions.Controls.Add(btnOpenDocument)
+
+        btnChooseAccess.Text = "Choose Access file"
+        btnChooseAccess.AutoSize = True
+        AddHandler btnChooseAccess.Click, AddressOf ChooseAccessFile
+        viewActions.Controls.Add(btnChooseAccess)
+
+        btnTestAccess.Text = "Test Access"
+        btnTestAccess.AutoSize = True
+        btnTestAccess.Enabled = False
+        AddHandler btnTestAccess.Click, Async Sub(sender, e) Await TestAccessAsync()
+        viewActions.Controls.Add(btnTestAccess)
+
+        lblAccessStatus.Text = "Access: no file selected"
+        lblAccessStatus.AutoSize = True
+        lblAccessStatus.Margin = New Padding(8, 9, 6, 2)
+        lblAccessStatus.ForeColor = Color.DimGray
+        viewActions.Controls.Add(lblAccessStatus)
+
+        btnSaveAccess.Text = "Preview / Save selected ASIN"
+        btnSaveAccess.AutoSize = True
+        btnSaveAccess.Visible = False
+        btnSaveAccess.Enabled = False
+        AddHandler btnSaveAccess.Click, Async Sub(sender, e) Await PreviewAndSaveAccessAsync()
+        viewActions.Controls.Add(btnSaveAccess)
 
         layout.Controls.Add(viewActions, 0, 3)
     End Sub
@@ -2151,6 +2184,7 @@ Public Partial Class MainForm
         Try
             CurrentViewOperation = ""
             SetCatalogViewMode(False)
+            UpdateAccessControls()
             lblViewTitle.Text = title
             lblViewSubtitle.Text = subtitle
             lblViewDetails.Text = "Details"
@@ -3334,6 +3368,7 @@ Public Partial Class MainForm
         If source Is Nothing Then Return
         If CurrentViewOperation = "catalog" Then
             RenderCatalogProductDetail(AsDict(source))
+            UpdateAccessControls()
         Else
             lblViewDetails.Text = "Selected record details"
             RenderDetailsFromObject(source)
@@ -3577,6 +3612,7 @@ Public Partial Class MainForm
         txtRaw.Text = PrettyJson(envelope)
         txtResult.Text = BuildSummary(operation, result)
         RenderResultView(operation, result)
+        UpdateAccessControls()
         DocumentUrls.Clear()
         DocumentUrls.AddRange(FindDocumentUrls(result.Data))
 
