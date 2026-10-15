@@ -220,6 +220,38 @@ Public Partial Class MainForm
 
     Public Sub RunCiSelfTest()
         If CurrentOperation <> "catalog" Then Throw New InvalidOperationException("Catalogue must be the initial active workflow.")
+        If btnSaveAccess.Enabled Then Throw New InvalidOperationException("Database save must be disabled until an Access file is verified.")
+        Dim dbSample As New Dictionary(Of String, Object) From {
+            {"asin", "B07N4M94X4"},
+            {"dimensions", New Object() {
+                New Dictionary(Of String, Object) From {
+                    {"item", New Dictionary(Of String, Object) From {
+                        {"weight", New Dictionary(Of String, Object) From {{"value", 1.25D}, {"unit", "pounds"}}},
+                        {"height", New Dictionary(Of String, Object) From {{"value", 3D}, {"unit", "inches"}}}
+                    }}
+                }
+            }},
+            {"images", New Object() {
+                New Dictionary(Of String, Object) From {
+                    {"images", New Object() {
+                        New Dictionary(Of String, Object) From {{"variant", "MAIN"}, {"link", "https://example.com/image.jpg"}}
+                    }}
+                }
+            }},
+            {"salesRanks", New Object() {
+                New Dictionary(Of String, Object) From {
+                    {"classificationRanks", New Object() {
+                        New Dictionary(Of String, Object) From {{"classificationId", "12345"}}
+                    }}
+                }
+            }}
+        }
+        Dim mapped = InventoryDatabase.MapCatalogItem(dbSample)
+        If mapped.Asin <> "B07N4M94X4" OrElse mapped.Values("Weight") <> "1.25" OrElse
+           mapped.Values("Height") <> "3" OrElse mapped.Values("ProductCatagory") <> "12345" OrElse
+           mapped.Values("ImageURL") <> "https://example.com/image.jpg" OrElse mapped.Values.ContainsKey("Width") Then
+            Throw New InvalidOperationException("Access catalogue mapping failed the offline test.")
+        End If
         If operationTree.SelectedNode Is Nothing OrElse operationTree.SelectedNode.Tag Is Nothing OrElse CStr(operationTree.SelectedNode.Tag) <> "catalog" Then
             Throw New InvalidOperationException("Catalogue must be visibly selected on startup.")
         End If
@@ -3592,7 +3624,89 @@ Public Partial Class MainForm
 
     #End Region
 
-    #Region "12 - Summaries, documents and follow-up actions"
+    #Region "12 - Microsoft Access database actions"
+    Private Sub ChooseAccessFile(sender As Object, e As EventArgs)
+        Using dialog As New OpenFileDialog()
+            dialog.Title = "Select an existing Microsoft Access database"
+            dialog.Filter = "Microsoft Access (*.accdb;*.mdb)|*.accdb;*.mdb"
+            dialog.CheckFileExists = True
+            If dialog.ShowDialog(Me) <> DialogResult.OK Then Return
+            AccessFilePath = dialog.FileName
+            AccessVerified = False
+            lblAccessStatus.Text = "Access: " & Path.GetFileName(AccessFilePath) & " (not tested)"
+            UpdateAccessControls()
+        End Using
+    End Sub
+
+    Private Async Function TestAccessAsync() As Task
+        If AccessFilePath = "" Then Return
+        Dim selectedPath = AccessFilePath
+        btnTestAccess.Enabled = False
+        lblAccessStatus.Text = "Testing Access connection..."
+        Try
+            Dim status = Await Task.Run(Function() InventoryDatabase.TestConnection(selectedPath))
+            If Not String.Equals(AccessFilePath, selectedPath, StringComparison.OrdinalIgnoreCase) Then Return
+            AccessVerified = True
+            lblAccessStatus.Text = "Access: connected (" & Path.GetFileName(selectedPath) & ")"
+            MessageBox.Show(status & Environment.NewLine & "No database data was changed.", "Access connection", MessageBoxButtons.OK, MessageBoxIcon.Information)
+        Catch ex As Exception
+            AccessVerified = False
+            lblAccessStatus.Text = "Access: connection failed"
+            MessageBox.Show(ex.Message, "Access connection failed", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        Finally
+            UpdateAccessControls()
+        End Try
+    End Function
+
+    Private Function SelectedCatalogItemForDatabase() As Dictionary(Of String, Object)
+        If CurrentViewOperation <> "catalog" OrElse LastResult Is Nothing OrElse Not LastResult.Ok Then Return Nothing
+        If viewGrid.SelectedRows.Count > 0 Then Return AsDict(viewGrid.SelectedRows(0).Tag)
+        Dim items = ListValue(GetValue(AsDict(LastResult.Data), "items"))
+        If items.Count = 1 Then Return AsDict(items(0))
+        Return Nothing
+    End Function
+
+    Private Sub UpdateAccessControls()
+        btnTestAccess.Enabled = AccessFilePath <> ""
+        btnSaveAccess.Visible = CurrentViewOperation = "catalog" AndAlso LastResult IsNot Nothing AndAlso LastResult.Ok
+        btnSaveAccess.Enabled = AccessVerified AndAlso btnSaveAccess.Visible AndAlso Not IsSandbox() AndAlso
+                                SelectedCatalogItemForDatabase() IsNot Nothing
+        If btnSaveAccess.Visible Then
+            btnSaveAccess.Text = If(IsSandbox(), "Save disabled in Sandbox", "Preview / Save selected ASIN")
+        End If
+    End Sub
+
+    Private Async Function PreviewAndSaveAccessAsync() As Task
+        If Not AccessVerified OrElse IsSandbox() Then
+            MessageBox.Show("Select and test a database first. Database writes require Production mode.", "Access save", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+        Dim selectedItem = SelectedCatalogItemForDatabase()
+        If selectedItem Is Nothing Then Return
+        Dim product = InventoryDatabase.MapCatalogItem(selectedItem)
+        Dim selectedPath = AccessFilePath
+        btnSaveAccess.Enabled = False
+        Try
+            Dim preview = Await Task.Run(Function() InventoryDatabase.Preview(selectedPath, product))
+            If IsSandbox() OrElse Not AccessVerified OrElse Not String.Equals(selectedPath, AccessFilePath, StringComparison.OrdinalIgnoreCase) Then Return
+            Dim answer = MessageBox.Show(preview & Environment.NewLine & "Please back up the Access database before its first write." &
+                                         Environment.NewLine & Environment.NewLine & "Save this ASIN now?",
+                                         "Review Access changes", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2)
+            If answer <> DialogResult.Yes Then Return
+            If IsSandbox() OrElse Not AccessVerified Then Return
+            Dim outcome = Await Task.Run(Function() InventoryDatabase.Save(selectedPath, product))
+            lblAccessStatus.Text = "Access: saved " & product.Asin
+            MessageBox.Show(outcome, "Saved to Microsoft Access", MessageBoxButtons.OK, MessageBoxIcon.Information)
+        Catch ex As Exception
+            MessageBox.Show("No successful database save was confirmed. " & ex.Message, "Access save failed", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        Finally
+            UpdateAccessControls()
+        End Try
+    End Function
+
+    #End Region
+
+    #Region "13 - Summaries, documents and follow-up actions"
     Private Sub ShowResult(operation As String, result As ApiResult)
         LastResult = result
         lblMeta.Text = result.Status.ToString(CultureInfo.InvariantCulture) & " " & result.StatusText & If(result.DurationMs > 0, "  |  " & result.DurationMs.ToString(CultureInfo.InvariantCulture) & " ms", "") & If(result.RequestId <> "", "  |  Request " & result.RequestId, "") & If(result.RateLimit <> "", "  |  " & result.RateLimit & " req/s", "")
