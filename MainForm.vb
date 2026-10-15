@@ -225,6 +225,18 @@ Public Partial Class MainForm
     Public Sub RunCiSelfTest()
         If CurrentOperation <> "catalog" Then Throw New InvalidOperationException("Catalogue must be the initial active workflow.")
         If btnSaveDatabase.Enabled Then Throw New InvalidOperationException("Database save must be disabled until an Access file is verified.")
+        If cboDatabaseType.Items.Count <> 2 OrElse SelectedDatabaseKind() <> InventoryDatabase.DatabaseKind.AccessFile Then
+            Throw New InvalidOperationException("Access and SQL Server must both be selectable.")
+        End If
+        cboDatabaseType.SelectedIndex = 1
+        If SelectedDatabaseKind() <> InventoryDatabase.DatabaseKind.SqlServer OrElse
+           btnChooseAccess.Visible OrElse Not txtSqlConnection.Visible OrElse btnSaveDatabase.Enabled Then
+            Throw New InvalidOperationException("SQL Server setup incorrectly exposes Access file controls or database writes.")
+        End If
+        cboDatabaseType.SelectedIndex = 0
+        If Not btnChooseAccess.Visible OrElse txtSqlConnection.Visible Then
+            Throw New InvalidOperationException("Access file controls were not restored.")
+        End If
         Dim dbSample As New Dictionary(Of String, Object) From {
             {"asin", "B07N4M94X4"},
             {"dimensions", New Object() {
