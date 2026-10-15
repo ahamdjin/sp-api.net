@@ -18,8 +18,8 @@ jobs:
             if (-not (Test-Path $name)) { throw "Missing $name" }
           }
           $database = Get-Content "Database.vb" -Raw
-          foreach ($item in @("MapCatalogItem", "TestConnection", "Preview", "Save", "OleDbConnection", "SqlConnection", "CommandFor")) {
-            if (-not $database.Contains($item)) { throw "Missing Access database code: $item" }
+          foreach ($item in @("MapCatalogItem", "TestConnection", "Preview", "Save", "SqlConnection", "SqlCommand", "SqlTransaction")) {
+            if (-not $database.Contains($item)) { throw "Missing SQL Server database code: $item" }
           }
           $api = Get-Content "ApiRequests.vb" -Raw
           foreach ($item in @("SandboxApiEnvironment", "ProductionApiEnvironment", "ExecuteOperationAsync", "CallSpApiAsync")) {
