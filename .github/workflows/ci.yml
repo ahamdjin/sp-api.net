@@ -9,13 +9,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: microsoft/setup-msbuild@v2
-      - name: Verify two code files
+      - name: Verify three code files
         shell: pwsh
         run: |
           $sources = @(Get-ChildItem -File -Filter *.vb)
-          if ($sources.Count -ne 2) { throw "Expected two VB code files, found $($sources.Count)." }
-          foreach ($name in @("MainForm.vb", "ApiRequests.vb")) {
+          if ($sources.Count -ne 3) { throw "Expected three VB code files, found $($sources.Count)." }
+          foreach ($name in @("MainForm.vb", "ApiRequests.vb", "Database.vb")) {
             if (-not (Test-Path $name)) { throw "Missing $name" }
+          }
+          $database = Get-Content "Database.vb" -Raw
+          foreach ($item in @("MapCatalogItem", "TestConnection", "Preview", "Save", "OleDbCommand")) {
+            if (-not $database.Contains($item)) { throw "Missing Access database code: $item" }
           }
           $api = Get-Content "ApiRequests.vb" -Raw
           foreach ($item in @("SandboxApiEnvironment", "ProductionApiEnvironment", "ExecuteOperationAsync", "CallSpApiAsync")) {
