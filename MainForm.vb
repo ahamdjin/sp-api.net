@@ -177,12 +177,15 @@ Public Partial Class MainForm
     Private ReadOnly cboReturnedRecords As New ComboBox()
     Private ReadOnly btnOpenReturnedRecord As New Button()
     Private ReadOnly btnEditRequest As New Button()
+    Private ReadOnly cboDatabaseType As New ComboBox()
+    Private ReadOnly txtSqlConnection As New TextBox()
+    Private ReadOnly lblSqlConnection As New Label()
     Private ReadOnly btnChooseAccess As New Button()
-    Private ReadOnly btnTestAccess As New Button()
-    Private ReadOnly btnSaveAccess As New Button()
-    Private ReadOnly lblAccessStatus As New Label()
+    Private ReadOnly btnTestDatabase As New Button()
+    Private ReadOnly btnSaveDatabase As New Button()
+    Private ReadOnly lblDatabaseStatus As New Label()
     Private AccessFilePath As String = ""
-    Private AccessVerified As Boolean
+    Private DatabaseVerified As Boolean
     Private CatalogResultEnvironment As String = ""
     Private ReadOnly tabs As New TabControl()
     Private ReadOnly appTooltips As New ToolTip()
@@ -221,7 +224,7 @@ Public Partial Class MainForm
 
     Public Sub RunCiSelfTest()
         If CurrentOperation <> "catalog" Then Throw New InvalidOperationException("Catalogue must be the initial active workflow.")
-        If btnSaveAccess.Enabled Then Throw New InvalidOperationException("Database save must be disabled until an Access file is verified.")
+        If btnSaveDatabase.Enabled Then Throw New InvalidOperationException("Database save must be disabled until an Access file is verified.")
         Dim dbSample As New Dictionary(Of String, Object) From {
             {"asin", "B07N4M94X4"},
             {"dimensions", New Object() {
@@ -781,7 +784,7 @@ Public Partial Class MainForm
                                                             InvalidateConnectionState()
                                                             BuildOperationFields()
                                                             ApplyEnvironmentVisualState()
-                                                            UpdateAccessControls()
+                                                            UpdateDatabaseControls()
                                                         End Sub
         AddHandler cboMarketplace.SelectedIndexChanged, Sub(sender, e)
                                                             InvalidateConnectionState()
@@ -946,9 +949,11 @@ Public Partial Class MainForm
         appTooltips.SetToolTip(btnRun, "Run the selected operation (Ctrl+Enter)")
         appTooltips.SetToolTip(btnTest, "Verify the selected environment and marketplace credentials")
         appTooltips.SetToolTip(cboEnvironment, "Sandbox uses Amazon test fixtures; Production uses the live seller account")
+        appTooltips.SetToolTip(cboDatabaseType, "Choose how InventoryDimensions is actually stored: an Access file or SQL Server.")
+        appTooltips.SetToolTip(txtSqlConnection, "Paste the existing FTSSQL connection string. It is masked and held in memory only, never stored by this app.")
         appTooltips.SetToolTip(btnChooseAccess, "Select an existing Access .accdb or .mdb file. Nothing is changed by selecting it.")
-        appTooltips.SetToolTip(btnTestAccess, "Verify Access and InventoryDimensions read access without writing data.")
-        appTooltips.SetToolTip(btnSaveAccess, "Preview a selected catalogue ASIN before an explicit database update. Production only.")
+        appTooltips.SetToolTip(btnTestDatabase, "Verify InventoryDimensions table structure and read access without modifying data.")
+        appTooltips.SetToolTip(btnSaveDatabase, "Preview a selected catalogue ASIN before an explicit database update. Production only.")
         AddHandler Me.KeyDown, AddressOf MainFormKeyDown
     End Sub
 
@@ -1145,29 +1150,48 @@ Public Partial Class MainForm
         AddHandler btnOpenDocument.Click, AddressOf OpenDocument
         viewActions.Controls.Add(btnOpenDocument)
 
+        cboDatabaseType.DropDownStyle = ComboBoxStyle.DropDownList
+        cboDatabaseType.Width = 148
+        cboDatabaseType.Items.AddRange(New Object() {"Access file", "SQL Server"})
+        cboDatabaseType.SelectedIndex = 0
+        AddHandler cboDatabaseType.SelectedIndexChanged, AddressOf DatabaseTypeChanged
+        viewActions.Controls.Add(cboDatabaseType)
+
+        lblSqlConnection.Text = "SQL connection:"
+        lblSqlConnection.AutoSize = True
+        lblSqlConnection.Margin = New Padding(4, 9, 4, 2)
+        lblSqlConnection.Visible = False
+        viewActions.Controls.Add(lblSqlConnection)
+
+        txtSqlConnection.Width = 320
+        txtSqlConnection.UseSystemPasswordChar = True
+        txtSqlConnection.Visible = False
+        AddHandler txtSqlConnection.TextChanged, AddressOf DatabaseSettingsChanged
+        viewActions.Controls.Add(txtSqlConnection)
+
         btnChooseAccess.Text = "Choose Access file"
         btnChooseAccess.AutoSize = True
         AddHandler btnChooseAccess.Click, AddressOf ChooseAccessFile
         viewActions.Controls.Add(btnChooseAccess)
 
-        btnTestAccess.Text = "Test Access"
-        btnTestAccess.AutoSize = True
-        btnTestAccess.Enabled = False
-        AddHandler btnTestAccess.Click, Async Sub(sender, e) Await TestAccessAsync()
-        viewActions.Controls.Add(btnTestAccess)
+        btnTestDatabase.Text = "Test database"
+        btnTestDatabase.AutoSize = True
+        btnTestDatabase.Enabled = False
+        AddHandler btnTestDatabase.Click, Async Sub(sender, e) Await TestDatabaseAsync()
+        viewActions.Controls.Add(btnTestDatabase)
 
-        lblAccessStatus.Text = "Access: no file selected"
-        lblAccessStatus.AutoSize = True
-        lblAccessStatus.Margin = New Padding(8, 9, 6, 2)
-        lblAccessStatus.ForeColor = Color.DimGray
-        viewActions.Controls.Add(lblAccessStatus)
+        lblDatabaseStatus.Text = "Database: no file selected"
+        lblDatabaseStatus.AutoSize = True
+        lblDatabaseStatus.Margin = New Padding(8, 9, 6, 2)
+        lblDatabaseStatus.ForeColor = Color.DimGray
+        viewActions.Controls.Add(lblDatabaseStatus)
 
-        btnSaveAccess.Text = "Preview / Save selected ASIN"
-        btnSaveAccess.AutoSize = True
-        btnSaveAccess.Visible = False
-        btnSaveAccess.Enabled = False
-        AddHandler btnSaveAccess.Click, Async Sub(sender, e) Await PreviewAndSaveAccessAsync()
-        viewActions.Controls.Add(btnSaveAccess)
+        btnSaveDatabase.Text = "Preview / Save selected ASIN"
+        btnSaveDatabase.AutoSize = True
+        btnSaveDatabase.Visible = False
+        btnSaveDatabase.Enabled = False
+        AddHandler btnSaveDatabase.Click, Async Sub(sender, e) Await PreviewAndSaveDatabaseAsync()
+        viewActions.Controls.Add(btnSaveDatabase)
 
         layout.Controls.Add(viewActions, 0, 3)
     End Sub
@@ -2218,7 +2242,7 @@ Public Partial Class MainForm
         Try
             CurrentViewOperation = ""
             SetCatalogViewMode(False)
-            UpdateAccessControls()
+            UpdateDatabaseControls()
             lblViewTitle.Text = title
             lblViewSubtitle.Text = subtitle
             lblViewDetails.Text = "Details"
@@ -3402,7 +3426,7 @@ Public Partial Class MainForm
         If source Is Nothing Then Return
         If CurrentViewOperation = "catalog" Then
             RenderCatalogProductDetail(AsDict(source))
-            UpdateAccessControls()
+            UpdateDatabaseControls()
         Else
             lblViewDetails.Text = "Selected record details"
             RenderDetailsFromObject(source)
@@ -3626,7 +3650,30 @@ Public Partial Class MainForm
 
     #End Region
 
-    #Region "12 - Microsoft Access database actions"
+    #Region "12 - Database connection and inventory updates"
+    Private Function SelectedDatabaseKind() As InventoryDatabase.DatabaseKind
+        Return If(cboDatabaseType.SelectedIndex = 1, InventoryDatabase.DatabaseKind.SqlServer, InventoryDatabase.DatabaseKind.AccessFile)
+    End Function
+
+    Private Function DatabaseSource() As String
+        Return If(SelectedDatabaseKind() = InventoryDatabase.DatabaseKind.SqlServer, txtSqlConnection.Text, AccessFilePath)
+    End Function
+
+    Private Sub DatabaseTypeChanged(sender As Object, e As EventArgs)
+        DatabaseVerified = False
+        btnChooseAccess.Visible = SelectedDatabaseKind() = InventoryDatabase.DatabaseKind.AccessFile
+        lblSqlConnection.Visible = Not btnChooseAccess.Visible
+        txtSqlConnection.Visible = Not btnChooseAccess.Visible
+        lblDatabaseStatus.Text = If(btnChooseAccess.Visible, "Access: select a file", "SQL Server: enter connection settings")
+        UpdateDatabaseControls()
+    End Sub
+
+    Private Sub DatabaseSettingsChanged(sender As Object, e As EventArgs)
+        DatabaseVerified = False
+        lblDatabaseStatus.Text = "Database: settings changed, not tested"
+        UpdateDatabaseControls()
+    End Sub
+
     Private Sub ChooseAccessFile(sender As Object, e As EventArgs)
         Using dialog As New OpenFileDialog()
             dialog.Title = "Select an existing Microsoft Access database"
@@ -3634,29 +3681,31 @@ Public Partial Class MainForm
             dialog.CheckFileExists = True
             If dialog.ShowDialog(Me) <> DialogResult.OK Then Return
             AccessFilePath = dialog.FileName
-            AccessVerified = False
-            lblAccessStatus.Text = "Access: " & Path.GetFileName(AccessFilePath) & " (not tested)"
-            UpdateAccessControls()
+            DatabaseVerified = False
+            lblDatabaseStatus.Text = "Access: " & Path.GetFileName(AccessFilePath) & " (not tested)"
+            UpdateDatabaseControls()
         End Using
     End Sub
 
-    Private Async Function TestAccessAsync() As Task
-        If AccessFilePath = "" Then Return
-        Dim selectedPath = AccessFilePath
-        btnTestAccess.Enabled = False
-        lblAccessStatus.Text = "Testing Access connection..."
+    Private Async Function TestDatabaseAsync() As Task
+        Dim selectedKind = SelectedDatabaseKind()
+        Dim selectedSource = DatabaseSource()
+        If String.IsNullOrWhiteSpace(selectedSource) Then Return
+        btnTestDatabase.Enabled = False
+        lblDatabaseStatus.Text = "Testing InventoryDimensions..."
         Try
-            Dim status = Await Task.Run(Function() InventoryDatabase.TestConnection(selectedPath))
-            If Not String.Equals(AccessFilePath, selectedPath, StringComparison.OrdinalIgnoreCase) Then Return
-            AccessVerified = True
-            lblAccessStatus.Text = "Access: connected (" & Path.GetFileName(selectedPath) & ")"
-            MessageBox.Show(status & Environment.NewLine & "No database data was changed.", "Access connection", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Dim status = Await Task.Run(Function() InventoryDatabase.TestConnection(selectedKind, selectedSource))
+            If selectedKind <> SelectedDatabaseKind() OrElse Not String.Equals(selectedSource, DatabaseSource(), StringComparison.Ordinal) Then Return
+            DatabaseVerified = True
+            lblDatabaseStatus.Text = If(selectedKind = InventoryDatabase.DatabaseKind.SqlServer,
+                                        "SQL Server: connected", "Access: connected (" & Path.GetFileName(selectedSource) & ")")
+            MessageBox.Show(status, "Database connection", MessageBoxButtons.OK, MessageBoxIcon.Information)
         Catch ex As Exception
-            AccessVerified = False
-            lblAccessStatus.Text = "Access: connection failed"
-            MessageBox.Show(ex.Message, "Access connection failed", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            DatabaseVerified = False
+            lblDatabaseStatus.Text = "Database: connection failed"
+            MessageBox.Show(ex.Message, "Database connection failed", MessageBoxButtons.OK, MessageBoxIcon.Error)
         Finally
-            UpdateAccessControls()
+            UpdateDatabaseControls()
         End Try
     End Function
 
@@ -3669,41 +3718,43 @@ Public Partial Class MainForm
         Return Nothing
     End Function
 
-    Private Sub UpdateAccessControls()
-        btnTestAccess.Enabled = AccessFilePath <> ""
-        btnSaveAccess.Visible = CurrentViewOperation = "catalog" AndAlso LastResult IsNot Nothing AndAlso LastResult.Ok
-        btnSaveAccess.Enabled = AccessVerified AndAlso btnSaveAccess.Visible AndAlso Not IsSandbox() AndAlso
-                                SelectedCatalogItemForDatabase() IsNot Nothing
-        If btnSaveAccess.Visible Then
-            btnSaveAccess.Text = If(IsSandbox(), "Save disabled in Sandbox", "Preview / Save selected ASIN")
+    Private Sub UpdateDatabaseControls()
+        btnTestDatabase.Enabled = Not String.IsNullOrWhiteSpace(DatabaseSource())
+        btnSaveDatabase.Visible = CurrentViewOperation = "catalog" AndAlso LastResult IsNot Nothing AndAlso LastResult.Ok
+        btnSaveDatabase.Enabled = DatabaseVerified AndAlso btnSaveDatabase.Visible AndAlso
+                                  SelectedCatalogItemForDatabase() IsNot Nothing
+        If btnSaveDatabase.Visible Then
+            btnSaveDatabase.Text = If(IsSandbox(), "Save disabled in Sandbox", "Preview / Save selected ASIN")
         End If
     End Sub
 
-    Private Async Function PreviewAndSaveAccessAsync() As Task
-        If Not AccessVerified OrElse IsSandbox() Then
-            MessageBox.Show("Select and test a database first. Database writes require Production mode.", "Access save", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+    Private Async Function PreviewAndSaveDatabaseAsync() As Task
+        If Not DatabaseVerified OrElse IsSandbox() Then
+            MessageBox.Show("Test a database connection first. Only Production catalogue results can be saved.", "Database save", MessageBoxButtons.OK, MessageBoxIcon.Warning)
             Return
         End If
         Dim selectedItem = SelectedCatalogItemForDatabase()
         If selectedItem Is Nothing Then Return
         Dim product = InventoryDatabase.MapCatalogItem(selectedItem)
-        Dim selectedPath = AccessFilePath
-        btnSaveAccess.Enabled = False
+        Dim selectedKind = SelectedDatabaseKind()
+        Dim selectedSource = DatabaseSource()
+        btnSaveDatabase.Enabled = False
         Try
-            Dim preview = Await Task.Run(Function() InventoryDatabase.Preview(selectedPath, product))
-            If IsSandbox() OrElse Not AccessVerified OrElse Not String.Equals(selectedPath, AccessFilePath, StringComparison.OrdinalIgnoreCase) Then Return
-            Dim answer = MessageBox.Show(preview & Environment.NewLine & "Please back up the Access database before its first write." &
+            Dim preview = Await Task.Run(Function() InventoryDatabase.Preview(selectedKind, selectedSource, product))
+            If Not DatabaseVerified OrElse IsSandbox() OrElse SelectedCatalogItemForDatabase() Is Nothing OrElse
+               selectedKind <> SelectedDatabaseKind() OrElse Not String.Equals(selectedSource, DatabaseSource(), StringComparison.Ordinal) Then Return
+            Dim answer = MessageBox.Show(preview & Environment.NewLine & "Back up the database before its first write." &
                                          Environment.NewLine & Environment.NewLine & "Save this ASIN now?",
-                                         "Review Access changes", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2)
+                                         "Review InventoryDimensions change", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2)
             If answer <> DialogResult.Yes Then Return
-            If IsSandbox() OrElse Not AccessVerified Then Return
-            Dim outcome = Await Task.Run(Function() InventoryDatabase.Save(selectedPath, product))
-            lblAccessStatus.Text = "Access: saved " & product.Asin
-            MessageBox.Show(outcome, "Saved to Microsoft Access", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            If Not DatabaseVerified OrElse IsSandbox() OrElse SelectedCatalogItemForDatabase() Is Nothing Then Return
+            Dim outcome = Await Task.Run(Function() InventoryDatabase.Save(selectedKind, selectedSource, product))
+            lblDatabaseStatus.Text = "Database: saved " & product.Asin
+            MessageBox.Show(outcome, "InventoryDimensions updated", MessageBoxButtons.OK, MessageBoxIcon.Information)
         Catch ex As Exception
-            MessageBox.Show("No successful database save was confirmed. " & ex.Message, "Access save failed", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            MessageBox.Show("The database save could not be confirmed. " & ex.Message, "Database save failed", MessageBoxButtons.OK, MessageBoxIcon.Error)
         Finally
-            UpdateAccessControls()
+            UpdateDatabaseControls()
         End Try
     End Function
 
@@ -3730,7 +3781,7 @@ Public Partial Class MainForm
         txtRaw.Text = PrettyJson(envelope)
         txtResult.Text = BuildSummary(operation, result)
         RenderResultView(operation, result)
-        UpdateAccessControls()
+        UpdateDatabaseControls()
         DocumentUrls.Clear()
         DocumentUrls.AddRange(FindDocumentUrls(result.Data))
 
