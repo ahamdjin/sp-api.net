@@ -41,7 +41,7 @@ Friend NotInheritable Class InventoryDatabase
         End If
 
         ' Item dimensions are deliberately NOT replaced with package dimensions.
-        If product.Values.Count < 4 Then
+        If New String() {"Weight", "Height", "Length", "Width"}.Any(Function(field) Not product.Values.ContainsKey(field)) Then
             Dim attributes = ObjectOf(ValueOf(item, "attributes"))
             Dim dimensions = Items(ValueOf(attributes, "item_dimensions"))
             If dimensions.Count > 0 Then
