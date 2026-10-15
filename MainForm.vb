@@ -125,8 +125,8 @@ Public Partial Class MainForm
         New OperationInfo With {.Group = "FBA inbound", .Id = "itemLabels", .Label = "Item labels"},
         New OperationInfo With {.Group = "FBA inbound", .Id = "shipmentLabels", .Label = "Shipment labels"},
         New OperationInfo With {.Group = "FBA inbound", .Id = "billOfLading", .Label = "Bill of lading"},
-        New OperationInfo With {.Group = "Microsoft Access database", .Id = "legacyConvert", .Label = "Convert Amazon_US", .Kind = "legacy"},
-        New OperationInfo With {.Group = "Microsoft Access database", .Id = "legacyFc", .Label = "SKU / FC bulk update", .Kind = "legacy"}
+        New OperationInfo With {.Group = "SQL Server utilities", .Id = "legacyConvert", .Label = "Convert Amazon_US", .Kind = "legacy"},
+        New OperationInfo With {.Group = "SQL Server utilities", .Id = "legacyFc", .Label = "SKU / FC bulk update", .Kind = "legacy"}
     }
 
     #End Region
@@ -252,7 +252,7 @@ Public Partial Class MainForm
         If mapped.Asin <> "B07N4M94X4" OrElse mapped.Values("Weight") <> "1.25" OrElse
            mapped.Values("Height") <> "3" OrElse mapped.Values("ProductCatagory") <> "12345" OrElse
            mapped.Values("ImageURL") <> "https://example.com/image.jpg" OrElse mapped.Values.ContainsKey("Width") Then
-            Throw New InvalidOperationException("Access catalogue mapping failed the offline test.")
+            Throw New InvalidOperationException("Catalogue-to-database mapping failed the offline test.")
         End If
         If operationTree.SelectedNode Is Nothing OrElse operationTree.SelectedNode.Tag Is Nothing OrElse CStr(operationTree.SelectedNode.Tag) <> "catalog" Then
             Throw New InvalidOperationException("Catalogue must be visibly selected on startup.")
@@ -1410,9 +1410,9 @@ Public Partial Class MainForm
         lblOperation.Text = operation.Label
         UpdateRunButtonPresentation()
         BuildOperationFields()
-        txtResult.Text = If(operation.Kind = "legacy", "This Microsoft Access database utility is not part of the portable SP-API connection.", "Run the selected request to see a readable result here.")
+        txtResult.Text = If(operation.Kind = "legacy", "This SQL Server utility is separate from Amazon SP-API and remains disconnected.", "Run the selected request to see a readable result here.")
         txtRaw.Text = If(operation.Kind = "legacy", "", "The complete Amazon response will appear here.")
-        ClearResultView(If(operation.Kind = "legacy", "Legacy utility", operation.Label), If(operation.Kind = "legacy", "This Microsoft Access utility is intentionally disconnected.", "Run the request to see the returned data here."))
+        ClearResultView(If(operation.Kind = "legacy", "Legacy utility", operation.Label), If(operation.Kind = "legacy", "This legacy SQL Server utility is not yet connected.", "Run the request to see the returned data here."))
         lblMeta.Text = ""
         btnOpenDocument.Visible = False
         cboDocuments.Visible = False
@@ -1589,7 +1589,7 @@ Public Partial Class MainForm
             Case "billOfLading"
                 AddText("shipmentId", "Shipment ID", True)
             Case "legacyConvert", "legacyFc"
-                AddNote("This is not an SP-API request. It depends on the old Microsoft Access (.accdb/.mdb) database/tables and business rules, so it remains intentionally disconnected just like the current workbench.")
+                AddNote("This is a legacy SQL Server utility, not an SP-API request. Its existing business rules are not yet connected.")
         End Select
         ApplyEnvironmentVisualState()
         requestPanel.ResumeLayout()
@@ -1850,7 +1850,7 @@ Public Partial Class MainForm
             Case "itemLabels" : Return "Request FBA item labels for the entered MSKUs and quantities."
             Case "shipmentLabels" : Return "Request shipment/carton/pallet labels for an existing FBA shipment."
             Case "billOfLading" : Return "Request the bill of lading document for an existing FBA shipment."
-            Case "legacyConvert", "legacyFc" : Return "Legacy company-specific Microsoft Access utility. It remains disconnected until the .accdb/.mdb file, table names, and existing Access queries are mapped."
+            Case "legacyConvert", "legacyFc" : Return "Legacy SQL Server utility. Its conversion or bulk-update business rules have not yet been provided, so this option remains disconnected."
         End Select
         Return ""
     End Function
@@ -2097,7 +2097,7 @@ Public Partial Class MainForm
     Private Async Function RunCurrentAsync() As Task
         SaveVisibleFieldValues()
         If CurrentOperation = "legacyConvert" OrElse CurrentOperation = "legacyFc" Then
-            MessageBox.Show("This Microsoft Access database utility is intentionally not connected in the portable SP-API workbench.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information)
+            MessageBox.Show("This legacy SQL Server utility is not yet connected; only the InventoryDimensions catalogue update has been implemented.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information)
             Return
         End If
         If Not CredentialsReady() Then
