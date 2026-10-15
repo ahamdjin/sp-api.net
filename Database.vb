@@ -293,8 +293,16 @@ Friend NotInheritable Class InventoryDatabase
                         Dim affected = command.ExecuteNonQuery()
                         If affected <> 1 Then Throw New InvalidOperationException("Expected one database record to be changed; Access reported " & affected.ToString(CultureInfo.InvariantCulture) & ".")
                     End Using
+                    Dim saved = ReadExisting(connection, product.Asin, transaction)
+                    If saved Is Nothing Then Throw New InvalidOperationException("Access did not return the saved ASIN for verification.")
+                    Dim summary As New System.Text.StringBuilder()
+                    summary.AppendLine(If(isInsert, "Inserted ", "Updated ") & product.Asin & " in InventoryDimensions.")
+                    summary.AppendLine("Values verified by reading the record:")
+                    For Each field In fieldNames
+                        summary.AppendLine(field & ": " & TextValue(saved(field)))
+                    Next
                     transaction.Commit()
-                    Return If(isInsert, "Inserted", "Updated") & " " & product.Asin & " in InventoryDimensions."
+                    Return summary.ToString()
                 Catch
                     transaction.Rollback()
                     Throw
