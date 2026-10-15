@@ -230,12 +230,12 @@ Public Partial Class MainForm
         End If
         cboDatabaseType.SelectedIndex = 1
         If SelectedDatabaseKind() <> InventoryDatabase.DatabaseKind.SqlServer OrElse
-           btnChooseAccess.Visible OrElse Not txtSqlConnection.Visible OrElse btnSaveDatabase.Enabled Then
-            Throw New InvalidOperationException("SQL Server setup incorrectly exposes Access file controls or database writes.")
+           DatabaseSource() <> "" OrElse btnSaveDatabase.Enabled Then
+            Throw New InvalidOperationException("SQL Server setup must start without an active connection or database writes.")
         End If
         cboDatabaseType.SelectedIndex = 0
-        If Not btnChooseAccess.Visible OrElse txtSqlConnection.Visible Then
-            Throw New InvalidOperationException("Access file controls were not restored.")
+        If SelectedDatabaseKind() <> InventoryDatabase.DatabaseKind.AccessFile OrElse DatabaseVerified Then
+            Throw New InvalidOperationException("Access file connection mode was not restored safely.")
         End If
         Dim dbSample As New Dictionary(Of String, Object) From {
             {"asin", "B07N4M94X4"},
@@ -3673,10 +3673,11 @@ Public Partial Class MainForm
 
     Private Sub DatabaseTypeChanged(sender As Object, e As EventArgs)
         DatabaseVerified = False
-        btnChooseAccess.Visible = SelectedDatabaseKind() = InventoryDatabase.DatabaseKind.AccessFile
-        lblSqlConnection.Visible = Not btnChooseAccess.Visible
-        txtSqlConnection.Visible = Not btnChooseAccess.Visible
-        lblDatabaseStatus.Text = If(btnChooseAccess.Visible, "Access: select a file", "SQL Server: enter connection settings")
+        Dim usingAccess = SelectedDatabaseKind() = InventoryDatabase.DatabaseKind.AccessFile
+        btnChooseAccess.Visible = usingAccess
+        lblSqlConnection.Visible = Not usingAccess
+        txtSqlConnection.Visible = Not usingAccess
+        lblDatabaseStatus.Text = If(usingAccess, "Access: select a file", "SQL Server: enter connection settings")
         UpdateDatabaseControls()
     End Sub
 
