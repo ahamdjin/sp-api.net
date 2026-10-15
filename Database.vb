@@ -6,11 +6,8 @@ Imports System
 Imports System.Collections
 Imports System.Collections.Generic
 Imports System.Data
-Imports System.Data.OleDb
-Imports System.Data.Common
 Imports System.Data.SqlClient
 Imports System.Globalization
-Imports System.IO
 Imports System.Linq
 
 ' All database access stays here. No changes to Joel's existing Access schema.
@@ -150,226 +147,181 @@ Friend NotInheritable Class InventoryDatabase
     End Function
     #End Region
 
-    Friend Enum DatabaseKind
-        AccessFile = 0
-        SqlServer = 1
-    End Enum
-
-    #Region "02 - Direct Access or SQL Server connection"
-    Friend Shared Function TestConnection(kind As DatabaseKind, source As String) As String
-        Using connection = OpenConnection(kind, source)
+    #Region "02 - SQL Server connection and table validation"
+    Friend Shared Function TestConnection(connectionString As String) As String
+        Using connection = OpenConnection(connectionString)
             ReadColumns(connection)
-            Using command = CommandFor(connection, kind, "SELECT TOP 1 [Asin] FROM [InventoryDimensions]")
+            Using command As New SqlCommand("SELECT TOP 1 [Asin] FROM [InventoryDimensions]", connection)
                 Using reader = command.ExecuteReader()
                     If reader IsNot Nothing Then reader.Read()
                 End Using
             End Using
-            Return "Connected to InventoryDimensions. All eight expected columns were found and read access succeeded. No records were modified."
+            Return "Connected to SQL Server. InventoryDimensions has all eight expected columns and can be read. No records were changed."
         End Using
     End Function
 
-    Private Shared Function OpenConnection(kind As DatabaseKind, source As String) As System.Data.Common.DbConnection
-        If kind = DatabaseKind.SqlServer Then
-            If String.IsNullOrWhiteSpace(source) Then Throw New InvalidOperationException("Enter the SQL Server connection settings.")
-            Dim builder As System.Data.SqlClient.SqlConnectionStringBuilder
-            Try
-                builder = New System.Data.SqlClient.SqlConnectionStringBuilder(source)
-            Catch ex As ArgumentException
-                Throw New InvalidOperationException("Invalid SQL Server connection string. Use the existing FTSSQL connection setting, with the actual credentials entered privately in this application.", ex)
-            End Try
-            If String.IsNullOrWhiteSpace(builder.DataSource) OrElse String.IsNullOrWhiteSpace(builder.InitialCatalog) Then
-                Throw New InvalidOperationException("SQL Server configuration needs both Data Source (server) and Initial Catalog (database).")
-            End If
-            Dim connection As New System.Data.SqlClient.SqlConnection(builder.ConnectionString)
-            Try
-                connection.Open()
-                Return connection
-            Catch
-                connection.Dispose()
-                Throw
-            End Try
+    Private Shared Function OpenConnection(connectionString As String) As SqlConnection
+        If String.IsNullOrWhiteSpace(connectionString) Then
+            Throw New InvalidOperationException("Enter the existing SQL Server connection setting (FTSSQL) in the application.")
         End If
-
-        If kind <> DatabaseKind.AccessFile Then Throw New InvalidOperationException("Unsupported database connection type.")
-        If String.IsNullOrWhiteSpace(source) OrElse Not File.Exists(source) Then
-            Throw New InvalidOperationException("Select an existing Microsoft Access database file first.")
+        Dim builder As SqlConnectionStringBuilder
+        Try
+            builder = New SqlConnectionStringBuilder(connectionString)
+        Catch ex As ArgumentException
+            Throw New InvalidOperationException("The SQL Server connection setting is not valid.", ex)
+        End Try
+        If String.IsNullOrWhiteSpace(builder.DataSource) OrElse String.IsNullOrWhiteSpace(builder.InitialCatalog) Then
+            Throw New InvalidOperationException("The SQL Server connection must include a server name (Data Source) and database name (Initial Catalog).")
         End If
-        Dim extension = Path.GetExtension(source).ToLowerInvariant()
-        If extension <> ".accdb" AndAlso extension <> ".mdb" Then
-            Throw New InvalidOperationException("Select a Microsoft Access .accdb or .mdb database.")
-        End If
-        Dim firstError As Exception = Nothing
-        For Each provider In {"Microsoft.ACE.OLEDB.12.0", "Microsoft.ACE.OLEDB.16.0"}
-            Dim builder As New OleDbConnectionStringBuilder()
-            builder.Provider = provider
-            builder.DataSource = Path.GetFullPath(source)
-            Dim connection As New OleDbConnection(builder.ConnectionString)
-            Try
-                connection.Open()
-                Return connection
-            Catch ex As Exception When TypeOf ex Is OleDbException OrElse TypeOf ex Is InvalidOperationException
-                connection.Dispose()
-                If firstError Is Nothing Then firstError = ex
-            End Try
-        Next
-        Throw New InvalidOperationException("The Access file could not be opened. Check the ACE database provider, file permissions and any linked tables. " &
-                                            If(firstError Is Nothing, "", "Details: " & firstError.Message), firstError)
+        Dim connection As New SqlConnection(builder.ConnectionString)
+        Try
+            connection.Open()
+            Return connection
+        Catch
+            connection.Dispose()
+            Throw
+        End Try
     End Function
 
-    Private Shared Function Placeholder(kind As DatabaseKind, index As Integer) As String
-        Return If(kind = DatabaseKind.SqlServer, "@p" & index.ToString(CultureInfo.InvariantCulture), "?")
-    End Function
-
-    Private Shared Function CommandFor(connection As System.Data.Common.DbConnection, kind As DatabaseKind, sql As String,
-                                       Optional transaction As System.Data.Common.DbTransaction = Nothing,
-                                       Optional values As List(Of Object) = Nothing) As System.Data.Common.DbCommand
-        Dim command = connection.CreateCommand()
-        command.CommandText = sql
-        If transaction IsNot Nothing Then command.Transaction = transaction
-        If values IsNot Nothing Then
-            For index As Integer = 0 To values.Count - 1
-                Dim parameter = command.CreateParameter()
-                parameter.ParameterName = "@p" & index.ToString(CultureInfo.InvariantCulture)
-                parameter.Value = If(values(index), DBNull.Value)
-                command.Parameters.Add(parameter)
-            Next
-        End If
-        Return command
-    End Function
-
-    Private Shared Function ReadColumns(connection As System.Data.Common.DbConnection) As Dictionary(Of String, Type)
+    Private Shared Function ReadColumns(connection As SqlConnection) As Dictionary(Of String, Type)
         Dim columns As New Dictionary(Of String, Type)(StringComparer.OrdinalIgnoreCase)
         Dim selected = String.Join(", ", Fields.Select(Function(field) "[" & field & "]"))
         Try
-            Using command = connection.CreateCommand()
-                command.CommandText = "SELECT TOP 0 " & selected & " FROM [InventoryDimensions]"
+            Using command As New SqlCommand("SELECT TOP 0 " & selected & " FROM [InventoryDimensions]", connection)
                 Using reader = command.ExecuteReader(CommandBehavior.SchemaOnly)
                     Dim schema = reader.GetSchemaTable()
-                    If schema Is Nothing Then Throw New InvalidOperationException("Could not read the InventoryDimensions table structure.")
+                    If schema Is Nothing Then Throw New InvalidOperationException("Cannot inspect InventoryDimensions columns.")
                     For Each row As DataRow In schema.Rows
                         columns(Convert.ToString(row("ColumnName"), CultureInfo.InvariantCulture)) = DirectCast(row("DataType"), Type)
                     Next
                 End Using
             End Using
-        Catch ex As System.Data.Common.DbException
-            Throw New InvalidOperationException("InventoryDimensions must be readable and have the eight expected fields. Check the table, linked-table connection and permissions. " & ex.Message, ex)
+        Catch ex As SqlException
+            Throw New InvalidOperationException("SQL Server could not read InventoryDimensions and its expected columns. Check the selected database and table permissions. " & ex.Message, ex)
         End Try
         For Each field In Fields
-            If Not columns.ContainsKey(field) Then Throw New InvalidOperationException("InventoryDimensions is missing: " & field)
+            If Not columns.ContainsKey(field) Then Throw New InvalidOperationException("InventoryDimensions is missing the field " & field)
         Next
         Return columns
     End Function
 
-    Private Shared Function ReadExisting(connection As System.Data.Common.DbConnection, kind As DatabaseKind, asin As String,
-                                         Optional transaction As System.Data.Common.DbTransaction = Nothing) As Dictionary(Of String, Object)
+    Private Shared Function ReadExisting(connection As SqlConnection, asin As String, Optional transaction As SqlTransaction = Nothing) As Dictionary(Of String, Object)
         Dim selected = String.Join(", ", Fields.Select(Function(field) "[" & field & "]"))
-        Dim sql = "SELECT " & selected & " FROM [InventoryDimensions] WHERE [Asin] = " & Placeholder(kind, 0)
-        Using command = CommandFor(connection, kind, sql, transaction, New List(Of Object) From {asin})
+        Dim table = If(transaction Is Nothing, "[InventoryDimensions]", "[InventoryDimensions] WITH (UPDLOCK, HOLDLOCK)")
+        Using command As New SqlCommand("SELECT " & selected & " FROM " & table & " WHERE [Asin] = @asin", connection)
+            If transaction IsNot Nothing Then command.Transaction = transaction
+            command.Parameters.Add("@asin", SqlDbType.NVarChar, 10).Value = asin
             Using reader = command.ExecuteReader()
                 If Not reader.Read() Then Return Nothing
                 Dim existing As New Dictionary(Of String, Object)(StringComparer.OrdinalIgnoreCase)
                 For index As Integer = 0 To reader.FieldCount - 1
                     existing(reader.GetName(index)) = If(reader.IsDBNull(index), Nothing, reader.GetValue(index))
                 Next
-                If reader.Read() Then Throw New InvalidOperationException("InventoryDimensions has duplicate rows for ASIN " & asin & ". No save will be attempted.")
+                If reader.Read() Then Throw New InvalidOperationException("Multiple InventoryDimensions records have ASIN " & asin & ". Please correct the duplicates before saving.")
                 Return existing
             End Using
         End Using
     End Function
     #End Region
 
-    #Region "03 - Read-only preview and confirmed insert/update"
-    Friend Shared Function Preview(kind As DatabaseKind, source As String, product As ProductRecord) As String
+    #Region "03 - Preview and confirmed SQL Server insert/update"
+    Friend Shared Function Preview(connectionString As String, product As ProductRecord) As String
         ValidateProduct(product)
-        Using connection = OpenConnection(kind, source)
+        Using connection = OpenConnection(connectionString)
             ReadColumns(connection)
-            Dim current = ReadExisting(connection, kind, product.Asin)
-            Dim message As New System.Text.StringBuilder()
-            message.AppendLine("Database: " & If(kind = DatabaseKind.AccessFile, Path.GetFileName(source), "SQL Server"))
-            message.AppendLine("Table: InventoryDimensions")
-            message.AppendLine("ASIN: " & product.Asin)
-            message.AppendLine("Action: " & If(current Is Nothing, "INSERT", "UPDATE"))
-            message.AppendLine()
+            Dim current = ReadExisting(connection, product.Asin)
+            Dim output As New System.Text.StringBuilder()
+            output.AppendLine("Database: SQL Server")
+            output.AppendLine("Table: InventoryDimensions")
+            output.AppendLine("ASIN: " & product.Asin)
+            output.AppendLine("Action: " & If(current Is Nothing, "INSERT", "UPDATE"))
+            output.AppendLine()
             For Each field In ProductFields
                 Dim newValue As String = Nothing
                 If Not product.Values.TryGetValue(field, newValue) Then
-                    message.AppendLine(field & ": not returned (preserve existing value)")
+                    output.AppendLine(field & ": not returned by Amazon (preserve existing data)")
                 Else
                     Dim oldValue = If(current Is Nothing, "(new)", TextValue(current(field)))
                     Dim unit As String = Nothing
                     product.Units.TryGetValue(field, unit)
-                    message.AppendLine(field & ": " & oldValue & "  ->  " & newValue & If(String.IsNullOrWhiteSpace(unit), "", " " & unit))
+                    output.AppendLine(field & ": " & oldValue & "  ->  " & newValue & If(String.IsNullOrWhiteSpace(unit), "", " " & unit))
                 End If
             Next
-            message.AppendLine("LastUpdated: current date/time, once saved")
-            message.AppendLine()
-            message.AppendLine("IMPORTANT: Measurements will be stored in their original Amazon units without conversion. Confirm the table expects those units.")
+            output.AppendLine("LastUpdated: set on successful save")
+            output.AppendLine()
+            output.AppendLine("IMPORTANT: Amazon measurements have not been converted between units. Confirm what the existing database expects.")
             For Each note In product.Notes
-                message.AppendLine(note)
+                output.AppendLine(note)
             Next
-            Return message.ToString()
+            Return output.ToString()
         End Using
     End Function
 
-    Friend Shared Function Save(kind As DatabaseKind, source As String, product As ProductRecord) As String
+    Friend Shared Function Save(connectionString As String, product As ProductRecord) As String
         ValidateProduct(product)
-        Using connection = OpenConnection(kind, source)
+        Using connection = OpenConnection(connectionString)
             Dim columns = ReadColumns(connection)
-            Using transaction = connection.BeginTransaction()
+            Using transaction = connection.BeginTransaction(IsolationLevel.ReadCommitted)
                 Try
-                    Dim current = ReadExisting(connection, kind, product.Asin, transaction)
+                    Dim current = ReadExisting(connection, product.Asin, transaction)
                     Dim inserting = current Is Nothing
-                    Dim fieldNames As New List(Of String)()
+                    Dim fieldsToSave As New List(Of String)()
                     Dim values As New List(Of Object)()
                     If inserting Then
-                        fieldNames.Add("Asin")
+                        fieldsToSave.Add("Asin")
                         values.Add(TypedValue("Asin", product.Asin, columns))
                     End If
                     For Each field In ProductFields
-                        Dim value As String = Nothing
-                        If product.Values.TryGetValue(field, value) Then
-                            fieldNames.Add(field)
-                            values.Add(TypedValue(field, value, columns))
+                        Dim newValue As String = Nothing
+                        If product.Values.TryGetValue(field, newValue) Then
+                            fieldsToSave.Add(field)
+                            values.Add(TypedValue(field, newValue, columns))
                         End If
                     Next
-                    fieldNames.Add("LastUpdated")
+                    fieldsToSave.Add("LastUpdated")
                     values.Add(TypedValue("LastUpdated", DateTime.Now, columns))
 
                     Dim sql As String
                     If inserting Then
                         sql = "INSERT INTO [InventoryDimensions] (" &
-                              String.Join(", ", fieldNames.Select(Function(field) "[" & field & "]")) &
-                              ") VALUES (" & String.Join(", ", fieldNames.Select(Function(field, index) Placeholder(kind, index))) & ")"
+                              String.Join(", ", fieldsToSave.Select(Function(field) "[" & field & "]")) &
+                              ") VALUES (" & String.Join(", ", fieldsToSave.Select(Function(field, index) "@p" & index.ToString(CultureInfo.InvariantCulture))) & ")"
                     Else
                         sql = "UPDATE [InventoryDimensions] SET " &
-                              String.Join(", ", fieldNames.Select(Function(field, index) "[" & field & "] = " & Placeholder(kind, index))) &
-                              " WHERE [Asin] = " & Placeholder(kind, fieldNames.Count)
+                              String.Join(", ", fieldsToSave.Select(Function(field, index) "[" & field & "] = @p" & index.ToString(CultureInfo.InvariantCulture))) &
+                              " WHERE [Asin] = @p" & fieldsToSave.Count.ToString(CultureInfo.InvariantCulture)
                         values.Add(TypedValue("Asin", product.Asin, columns))
                     End If
-                    Using command = CommandFor(connection, kind, sql, transaction, values)
+                    Using command As New SqlCommand(sql, connection, transaction)
+                        For index As Integer = 0 To values.Count - 1
+                            command.Parameters.AddWithValue("@p" & index.ToString(CultureInfo.InvariantCulture), values(index))
+                        Next
                         Dim affected = command.ExecuteNonQuery()
-                        If affected <> 1 Then Throw New InvalidOperationException("Expected to update one row, but the database reported " & affected.ToString(CultureInfo.InvariantCulture) & ".")
+                        If affected <> 1 Then Throw New InvalidOperationException("The expected update count was 1, but SQL Server reported " & affected.ToString(CultureInfo.InvariantCulture) & ".")
                     End Using
-                    Dim saved = ReadExisting(connection, kind, product.Asin, transaction)
-                    If saved Is Nothing Then Throw New InvalidOperationException("The saved record could not be read back.")
-                    For Each field In fieldNames
-                        If Not ExpectedMatches(saved(field), values(fieldNames.IndexOf(field)), columns(field)) Then
-                            Throw New InvalidOperationException("Saved field " & field & " did not match the requested value. Rolled back.")
+
+                    Dim saved = ReadExisting(connection, product.Asin, transaction)
+                    If saved Is Nothing Then Throw New InvalidOperationException("Could not verify the saved InventoryDimensions record.")
+                    For index As Integer = 0 To fieldsToSave.Count - 1
+                        Dim field = fieldsToSave(index)
+                        If Not ExpectedMatches(saved(field), values(index), columns(field)) Then
+                            Throw New InvalidOperationException("The stored " & field & " did not match the intended value. The change was rolled back.")
                         End If
                     Next
                     transaction.Commit()
-                    Dim summary As New System.Text.StringBuilder()
-                    summary.AppendLine(If(inserting, "Inserted ", "Updated ") & product.Asin & " in InventoryDimensions.")
-                    summary.AppendLine("Verified fields:")
-                    For Each field In fieldNames
-                        summary.AppendLine(field & ": " & TextValue(saved(field)))
+
+                    Dim result As New System.Text.StringBuilder()
+                    result.AppendLine(If(inserting, "Inserted ", "Updated ") & product.Asin & " in InventoryDimensions.")
+                    result.AppendLine("Saved values verified:")
+                    For Each field In fieldsToSave
+                        result.AppendLine(field & ": " & TextValue(saved(field)))
                     Next
-                    Return summary.ToString()
+                    Return result.ToString()
                 Catch
                     Try
                         transaction.Rollback()
                     Catch
-                        ' Preserve the original database error if the server has already rolled back.
+                        ' A failed connection may already have rolled back the transaction.
                     End Try
                     Throw
                 End Try
@@ -380,19 +332,19 @@ Friend NotInheritable Class InventoryDatabase
     Private Shared Function ExpectedMatches(actual As Object, expected As Object, fieldType As Type) As Boolean
         If actual Is Nothing Then Return expected Is Nothing
         If fieldType Is GetType(DateTime) Then
-            ' Access and SQL Server datetime storage can round fractional seconds.
             Return Math.Abs((CDate(actual) - CDate(expected)).TotalSeconds) < 1
         End If
-        If fieldType Is GetType(String) Then Return String.Equals(Convert.ToString(actual, CultureInfo.InvariantCulture),
-                                                                    Convert.ToString(expected, CultureInfo.InvariantCulture), StringComparison.Ordinal)
+        If fieldType Is GetType(String) Then
+            Return String.Equals(Convert.ToString(actual, CultureInfo.InvariantCulture), Convert.ToString(expected, CultureInfo.InvariantCulture), StringComparison.Ordinal)
+        End If
         Return Convert.ToDecimal(actual, CultureInfo.InvariantCulture) = Convert.ToDecimal(expected, CultureInfo.InvariantCulture)
     End Function
 
     Private Shared Sub ValidateProduct(product As ProductRecord)
         If product Is Nothing OrElse Not System.Text.RegularExpressions.Regex.IsMatch(product.Asin, "^[A-Z0-9]{10}$") Then
-            Throw New InvalidOperationException("A valid ten-character ASIN is required before saving.")
+            Throw New InvalidOperationException("A valid ten-character ASIN is required.")
         End If
-        If product.Values.Count = 0 Then Throw New InvalidOperationException("Amazon returned no supported inventory values to save.")
+        If product.Values.Count = 0 Then Throw New InvalidOperationException("Amazon returned no supported dimensions, category or image values to save.")
     End Sub
 
     Private Shared Function TypedValue(field As String, value As Object, columns As Dictionary(Of String, Type)) As Object
@@ -400,7 +352,7 @@ Friend NotInheritable Class InventoryDatabase
         If fieldType Is GetType(String) Then Return Convert.ToString(value, CultureInfo.InvariantCulture)
         If fieldType Is GetType(DateTime) Then
             If TypeOf value Is DateTime Then Return value
-            Throw New InvalidOperationException(field & " is expected to be Date/Time.")
+            Throw New InvalidOperationException(field & " needs a Date/Time value.")
         End If
         If fieldType Is GetType(Decimal) Then Return Decimal.Parse(Convert.ToString(value, CultureInfo.InvariantCulture), CultureInfo.InvariantCulture)
         If fieldType Is GetType(Double) Then Return Double.Parse(Convert.ToString(value, CultureInfo.InvariantCulture), CultureInfo.InvariantCulture)
@@ -408,7 +360,7 @@ Friend NotInheritable Class InventoryDatabase
         If fieldType Is GetType(Integer) Then Return Integer.Parse(Convert.ToString(value, CultureInfo.InvariantCulture), CultureInfo.InvariantCulture)
         If fieldType Is GetType(Long) Then Return Long.Parse(Convert.ToString(value, CultureInfo.InvariantCulture), CultureInfo.InvariantCulture)
         If fieldType Is GetType(Short) Then Return Short.Parse(Convert.ToString(value, CultureInfo.InvariantCulture), CultureInfo.InvariantCulture)
-        Throw New InvalidOperationException(field & " has an unsupported database type (" & fieldType.Name & "). No changes were saved.")
+        Throw New InvalidOperationException(field & " is stored as unsupported SQL Server data type " & fieldType.Name & ". No values were changed.")
     End Function
     #End Region
 
