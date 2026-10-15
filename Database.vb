@@ -56,6 +56,15 @@ Friend NotInheritable Class InventoryDatabase
             End If
         End If
 
+        ' Some product types supply item_weight separately from item_dimensions.
+        If Not product.Values.ContainsKey("Weight") Then
+            Dim attributes = ObjectOf(ValueOf(item, "attributes"))
+            For Each weightObject In Items(ValueOf(attributes, "item_weight"))
+                AddMeasurement(product, "Weight", ObjectOf(weightObject))
+                If product.Values.ContainsKey("Weight") Then Exit For
+            Next
+        End If
+
         For Each groupObject In Items(ValueOf(item, "images"))
             Dim imageGroup = ObjectOf(groupObject)
             Dim images = Items(ValueOf(imageGroup, "images")).Select(Function(x) ObjectOf(x)).ToList()
