@@ -433,8 +433,8 @@ Friend NotInheritable Class InventoryDatabase
                 }}
             }
             Dim product = MapCatalogItem(catalog)
-            Dim preview = Preview(connectionString, product)
-            If Not preview.Contains("Action: INSERT") Then Throw New InvalidOperationException("New ASIN did not preview an INSERT.")
+            Dim previewText = Preview(connectionString, product)
+            If Not previewText.Contains("Action: INSERT") Then Throw New InvalidOperationException("New ASIN did not preview an INSERT.")
             If Not Save(connectionString, product).Contains("Inserted") Then Throw New InvalidOperationException("INSERT did not complete.")
 
             Using connection As New SqlConnection(connectionString)
