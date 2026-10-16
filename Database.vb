@@ -371,7 +371,7 @@ Friend NotInheritable Class InventoryDatabase
         End If
 
         Dim name = "SPAPI_Test_" & Guid.NewGuid().ToString("N")
-        Dim server = "(localdb)\\MSSQLLocalDB"
+        Dim server = "(localdb)\MSSQLLocalDB"
         Dim masterBuilder As New SqlConnectionStringBuilder With {
             .DataSource = server, .InitialCatalog = "master", .IntegratedSecurity = True, .ConnectTimeout = 60
         }
