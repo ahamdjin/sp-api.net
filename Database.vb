@@ -446,17 +446,17 @@ Friend NotInheritable Class InventoryDatabase
                 End If
             End Using
 
-            Dim partial As New ProductRecord With {.Asin = "B07N4M94X4"}
-            partial.Values("Weight") = "2.5"
-            partial.Values("ImageURL") = "https://example.com/O'Brien-image.jpg"
-            If Not Preview(connectionString, partial).Contains("Action: UPDATE") Then
+            Dim updateOnly As New ProductRecord With {.Asin = "B07N4M94X4"}
+            updateOnly.Values("Weight") = "2.5"
+            updateOnly.Values("ImageURL") = "https://example.com/O'Brien-image.jpg"
+            If Not Preview(connectionString, updateOnly).Contains("Action: UPDATE") Then
                 Throw New InvalidOperationException("Existing ASIN did not preview an UPDATE.")
             End If
-            If Not Save(connectionString, partial).Contains("Updated") Then Throw New InvalidOperationException("UPDATE failed.")
+            If Not Save(connectionString, updateOnly).Contains("Updated") Then Throw New InvalidOperationException("UPDATE failed.")
 
             Using connection As New SqlConnection(connectionString)
                 connection.Open()
-                Dim saved = ReadExisting(connection, partial.Asin)
+                Dim saved = ReadExisting(connection, updateOnly.Asin)
                 If TextValue(saved("Weight")) <> "2.5" OrElse TextValue(saved("Height")) <> "3" OrElse
                    TextValue(saved("Width")) <> "4" OrElse TextValue(saved("ProductCatagory")) <> "12345" OrElse
                    Not TextValue(saved("ImageURL")).Contains("O'Brien") Then
