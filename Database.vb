@@ -10,7 +10,7 @@ Imports System.Data.SqlClient
 Imports System.Globalization
 Imports System.Linq
 
-' All database access stays here. No changes to Joel's existing Access schema.
+' All SQL Server access stays here. Existing production schema remains unchanged.
 Friend NotInheritable Class InventoryDatabase
 
     Friend NotInheritable Class ProductRecord
@@ -362,6 +362,148 @@ Friend NotInheritable Class InventoryDatabase
         If fieldType Is GetType(Short) Then Return Short.Parse(Convert.ToString(value, CultureInfo.InvariantCulture), CultureInfo.InvariantCulture)
         Throw New InvalidOperationException(field & " is stored as unsupported SQL Server data type " & fieldType.Name & ". No values were changed.")
     End Function
+    #End Region
+
+    #Region "04 - Disposable SQL Server integration test (CI only)"
+    Friend Shared Sub RunCiSqlIntegrationTests()
+        If Environment.GetEnvironmentVariable("SP_API_CI_SQL_SMOKE") <> "1" Then
+            Throw New InvalidOperationException("The isolated SQL integration test is only available in CI test mode.")
+        End If
+
+        Dim name = "SPAPI_Test_" & Guid.NewGuid().ToString("N")
+        Dim server = "(localdb)\\MSSQLLocalDB"
+        Dim masterBuilder As New SqlConnectionStringBuilder With {
+            .DataSource = server, .InitialCatalog = "master", .IntegratedSecurity = True, .ConnectTimeout = 60
+        }
+        Dim testBuilder As New SqlConnectionStringBuilder(masterBuilder.ConnectionString) With {.InitialCatalog = name}
+        Dim created As Boolean = False
+
+        Try
+            Using master As New SqlConnection(masterBuilder.ConnectionString)
+                master.Open()
+                Using command As New SqlCommand("CREATE DATABASE [" & name & "]", master)
+                    command.CommandTimeout = 90
+                    command.ExecuteNonQuery()
+                End Using
+                created = True
+            End Using
+
+            Using connection As New SqlConnection(testBuilder.ConnectionString)
+                connection.Open()
+                Using command As New SqlCommand(
+                    "CREATE TABLE [dbo].[InventoryDimensions] (" &
+                    "[Asin] nvarchar(10) NOT NULL PRIMARY KEY, [Weight] nvarchar(50) NULL, " &
+                    "[Height] nvarchar(50) NULL, [Length] nvarchar(50) NULL, [Width] nvarchar(50) NULL, " &
+                    "[LastUpdated] datetime2(3) NOT NULL, [ProductCatagory] nvarchar(100) NULL, " &
+                    "[ImageURL] nvarchar(1000) NULL)", connection)
+                    command.ExecuteNonQuery()
+                End Using
+            End Using
+
+            Dim connectionString = testBuilder.ConnectionString
+            If Not TestConnection(connectionString).Contains("Connected") Then
+                Throw New InvalidOperationException("SQL Server read-only connection test failed.")
+            End If
+
+            Dim catalog As New Dictionary(Of String, Object) From {
+                {"asin", "B07N4M94X4"},
+                {"dimensions", New Object() {
+                    New Dictionary(Of String, Object) From {
+                        {"item", New Dictionary(Of String, Object) From {
+                            {"weight", New Dictionary(Of String, Object) From {{"value", 1.25D}, {"unit", "pounds"}}},
+                            {"height", New Dictionary(Of String, Object) From {{"value", 3.0D}, {"unit", "inches"}}},
+                            {"length", New Dictionary(Of String, Object) From {{"value", 5.0D}, {"unit", "inches"}}},
+                            {"width", New Dictionary(Of String, Object) From {{"value", 4.0D}, {"unit", "inches"}}}
+                        }}
+                    }
+                }},
+                {"images", New Object() {
+                    New Dictionary(Of String, Object) From {
+                        {"images", New Object() {
+                            New Dictionary(Of String, Object) From {{"variant", "MAIN"}, {"link", "https://example.com/photo.jpg"}}
+                        }}
+                    }
+                }},
+                {"salesRanks", New Object() {
+                    New Dictionary(Of String, Object) From {
+                        {"classificationRanks", New Object() {
+                            New Dictionary(Of String, Object) From {{"classificationId", "12345"}}
+                        }}
+                    }
+                }}
+            }
+            Dim product = MapCatalogItem(catalog)
+            Dim preview = Preview(connectionString, product)
+            If Not preview.Contains("Action: INSERT") Then Throw New InvalidOperationException("New ASIN did not preview an INSERT.")
+            If Not Save(connectionString, product).Contains("Inserted") Then Throw New InvalidOperationException("INSERT did not complete.")
+
+            Using connection As New SqlConnection(connectionString)
+                connection.Open()
+                Dim saved = ReadExisting(connection, product.Asin)
+                If saved Is Nothing OrElse TextValue(saved("Weight")) <> "1.25" OrElse TextValue(saved("Width")) <> "4" OrElse
+                   TextValue(saved("ProductCatagory")) <> "12345" Then
+                    Throw New InvalidOperationException("INSERT did not store the expected dimensions and category.")
+                End If
+            End Using
+
+            Dim partial As New ProductRecord With {.Asin = "B07N4M94X4"}
+            partial.Values("Weight") = "2.5"
+            partial.Values("ImageURL") = "https://example.com/O'Brien-image.jpg"
+            If Not Preview(connectionString, partial).Contains("Action: UPDATE") Then
+                Throw New InvalidOperationException("Existing ASIN did not preview an UPDATE.")
+            End If
+            If Not Save(connectionString, partial).Contains("Updated") Then Throw New InvalidOperationException("UPDATE failed.")
+
+            Using connection As New SqlConnection(connectionString)
+                connection.Open()
+                Dim saved = ReadExisting(connection, partial.Asin)
+                If TextValue(saved("Weight")) <> "2.5" OrElse TextValue(saved("Height")) <> "3" OrElse
+                   TextValue(saved("Width")) <> "4" OrElse TextValue(saved("ProductCatagory")) <> "12345" OrElse
+                   Not TextValue(saved("ImageURL")).Contains("O'Brien") Then
+                    Throw New InvalidOperationException("UPDATE overwrote missing fields or mishandled SQL quotes.")
+                End If
+            End Using
+
+            Dim invalid As New ProductRecord With {.Asin = "B07N4M94X4"}
+            invalid.Values("Weight") = "3.25"
+            invalid.Values("ImageURL") = New String("X"c, 1050)
+            Dim refused As Boolean = False
+            Try
+                Save(connectionString, invalid)
+            Catch ex As SqlException
+                refused = True
+            End Try
+            If Not refused Then Throw New InvalidOperationException("Expected to reject overlong ImageURL.")
+            Using connection As New SqlConnection(connectionString)
+                connection.Open()
+                Dim saved = ReadExisting(connection, invalid.Asin)
+                If TextValue(saved("Weight")) <> "2.5" Then
+                    Throw New InvalidOperationException("A failed update modified the record instead of rolling back.")
+                End If
+            End Using
+
+            Dim badAsin As New ProductRecord With {.Asin = "B07N4M94X4' OR 1=1"}
+            badAsin.Values("Weight") = "99"
+            refused = False
+            Try
+                Save(connectionString, badAsin)
+            Catch ex As InvalidOperationException
+                refused = True
+            End Try
+            If Not refused Then Throw New InvalidOperationException("ASIN validation failed to reject unsafe identifiers.")
+        Finally
+            If created Then
+                Using master As New SqlConnection(masterBuilder.ConnectionString)
+                    master.Open()
+                    Using command As New SqlCommand(
+                        "ALTER DATABASE [" & name & "] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [" & name & "]", master)
+                        command.CommandTimeout = 90
+                        command.ExecuteNonQuery()
+                    End Using
+                End Using
+            End If
+        End Try
+    End Sub
     #End Region
 
 End Class
