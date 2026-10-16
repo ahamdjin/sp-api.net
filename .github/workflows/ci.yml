@@ -33,6 +33,33 @@ jobs:
         run: msbuild SP-API.NET.sln /m /p:Configuration=Debug /p:Platform="Any CPU"
       - name: Build Release
         run: msbuild SP-API.NET.sln /m /p:Configuration=Release /p:Platform="Any CPU"
+      - name: Exercise disposable SQL Server inserts and updates
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $command = Get-Command sqllocaldb.exe -ErrorAction SilentlyContinue
+          if ($command) {
+            $localdb = $command.Source
+          } else {
+            $localdb = Get-ChildItem "${env:ProgramFiles}\Microsoft SQL Server" -Filter SqlLocalDB.exe -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $localdb) { throw "SQL Server LocalDB is missing from the Windows runner." }
+          & $localdb info MSSQLLocalDB 2>&1 | Out-Host
+          if ($LASTEXITCODE -ne 0) {
+            & $localdb create MSSQLLocalDB
+            if ($LASTEXITCODE -ne 0) { throw "Could not create a disposable SQL Server LocalDB instance." }
+          }
+          & $localdb start MSSQLLocalDB
+          if ($LASTEXITCODE -ne 0) { throw "Could not start SQL Server LocalDB." }
+          $env:SP_API_CI_SQL_SMOKE = "1"
+          $exe = Resolve-Path "bin\Debug\SP-API.NET.exe"
+          $p = Start-Process -FilePath $exe -PassThru -Wait
+          if ($p.ExitCode -ne 0) {
+            $log = Join-Path (Split-Path $exe) "sql-smoke-error.txt"
+            if (Test-Path $log) { Get-Content $log }
+            throw "Disposable SQL Server integration test failed: $($p.ExitCode)"
+          }
       - name: Exercise offline UI and request validation
         shell: pwsh
         run: |
