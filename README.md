@@ -40,4 +40,8 @@ Sandbox catalogue data cannot be saved, even after switching to Production. The 
 
 ## Verification
 
-GitHub Actions builds Debug and Release on Windows and runs the built-in offline WinForms self-test, including all result-view operations and Sandbox/Production endpoint checks. Live Amazon seller authorization and actual reads/writes against Joel's SQL Server (ideally a test database) must be tested separately. CI has no connection to the live database or Amazon account.
+GitHub Actions validates the three-file layout, builds Debug and Release on Windows, and runs the built-in offline WinForms self-test (including API request validation and Sandbox/Production endpoint checks).
+
+It also launches an isolated SQL Server LocalDB instance, creates a **temporary test database**, and tests actual `InventoryDimensions` inserts, updates, read-back, partial-field preservation, apostrophes in string data, transaction rollback on SQL errors, invalid ASIN rejection, numeric column types, and missing-column detection. The temporary database is deleted at the end of the test. No access to Joel's server is used.
+
+**Not yet verified against Joel's environment:** his actual SQL Server connection and permissions; the real `InventoryDimensions` schema and constraints; the desired dimension measurement units and legacy category ID mapping; and live Amazon seller authorization. Use a backup or test database for the first end-to-end integration check.
