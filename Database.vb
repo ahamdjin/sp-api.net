@@ -440,9 +440,13 @@ Friend NotInheritable Class InventoryDatabase
             Using connection As New SqlConnection(connectionString)
                 connection.Open()
                 Dim saved = ReadExisting(connection, product.Asin)
-                If saved Is Nothing OrElse TextValue(saved("Weight")) <> "1.25" OrElse TextValue(saved("Width")) <> "4" OrElse
+                If saved Is Nothing Then Throw New InvalidOperationException("INSERT did not create an ASIN record.")
+                If Convert.ToDecimal(saved("Weight"), CultureInfo.InvariantCulture) <> 1.25D OrElse
+                   Convert.ToDecimal(saved("Width"), CultureInfo.InvariantCulture) <> 4D OrElse
                    TextValue(saved("ProductCatagory")) <> "12345" Then
-                    Throw New InvalidOperationException("INSERT did not store the expected dimensions and category.")
+                    Throw New InvalidOperationException("INSERT read-back mismatch. Weight=" & TextValue(saved("Weight")) &
+                                                        ", Width=" & TextValue(saved("Width")) &
+                                                        ", Category=" & TextValue(saved("ProductCatagory")))
                 End If
             End Using
 
@@ -457,10 +461,16 @@ Friend NotInheritable Class InventoryDatabase
             Using connection As New SqlConnection(connectionString)
                 connection.Open()
                 Dim saved = ReadExisting(connection, updateOnly.Asin)
-                If TextValue(saved("Weight")) <> "2.5" OrElse TextValue(saved("Height")) <> "3" OrElse
-                   TextValue(saved("Width")) <> "4" OrElse TextValue(saved("ProductCatagory")) <> "12345" OrElse
+                If Convert.ToDecimal(saved("Weight"), CultureInfo.InvariantCulture) <> 2.5D OrElse
+                   Convert.ToDecimal(saved("Height"), CultureInfo.InvariantCulture) <> 3D OrElse
+                   Convert.ToDecimal(saved("Width"), CultureInfo.InvariantCulture) <> 4D OrElse
+                   TextValue(saved("ProductCatagory")) <> "12345" OrElse
                    Not TextValue(saved("ImageURL")).Contains("O'Brien") Then
-                    Throw New InvalidOperationException("UPDATE overwrote missing fields or mishandled SQL quotes.")
+                    Throw New InvalidOperationException("UPDATE preservation or quoting mismatch. Weight=" & TextValue(saved("Weight")) &
+                                                        ", Height=" & TextValue(saved("Height")) &
+                                                        ", Width=" & TextValue(saved("Width")) &
+                                                        ", Category=" & TextValue(saved("ProductCatagory")) &
+                                                        ", ImageURL=" & TextValue(saved("ImageURL")))
                 End If
             End Using
 
