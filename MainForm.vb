@@ -23,6 +23,16 @@ Module Program
         Application.EnableVisualStyles()
         Application.SetCompatibleTextRenderingDefault(False)
 
+        If String.Equals(Environment.GetEnvironmentVariable("SP_API_CI_SQL_SMOKE"), "1", StringComparison.Ordinal) Then
+            Try
+                InventoryDatabase.RunCiSqlIntegrationTests()
+            Catch ex As Exception
+                File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "sql-smoke-error.txt"), ex.ToString())
+                Environment.ExitCode = 1
+            End Try
+            Return
+        End If
+
         If String.Equals(Environment.GetEnvironmentVariable("SP_API_CI_SMOKE"), "1", StringComparison.Ordinal) Then
             Try
                 Using form As New MainForm()
@@ -45,6 +55,7 @@ Public Partial Class MainForm
 
     ' View / UX only. Amazon request construction and transport live in ApiRequests.vb.
 
+    #Region "01 - Marketplaces and operations"
     Private Class Marketplace
         Public Property Id As String
         Public Property Name As String
@@ -124,10 +135,13 @@ Public Partial Class MainForm
         New OperationInfo With {.Group = "FBA inbound", .Id = "itemLabels", .Label = "Item labels"},
         New OperationInfo With {.Group = "FBA inbound", .Id = "shipmentLabels", .Label = "Shipment labels"},
         New OperationInfo With {.Group = "FBA inbound", .Id = "billOfLading", .Label = "Bill of lading"},
-        New OperationInfo With {.Group = "Microsoft Access database", .Id = "legacyConvert", .Label = "Convert Amazon_US", .Kind = "legacy"},
-        New OperationInfo With {.Group = "Microsoft Access database", .Id = "legacyFc", .Label = "SKU / FC bulk update", .Kind = "legacy"}
+        New OperationInfo With {.Group = "SQL Server utilities", .Id = "legacyConvert", .Label = "Convert Amazon_US", .Kind = "legacy"},
+        New OperationInfo With {.Group = "SQL Server utilities", .Id = "legacyFc", .Label = "SKU / FC bulk update", .Kind = "legacy"}
     }
 
+    #End Region
+
+    #Region "02 - UI controls and state"
     Private ReadOnly FieldValues As New Dictionary(Of String, Object)(StringComparer.OrdinalIgnoreCase)
     Private ReadOnly FieldControls As New Dictionary(Of String, Control)(StringComparer.OrdinalIgnoreCase)
 
@@ -164,11 +178,6 @@ Public Partial Class MainForm
     Private ReadOnly lblProductImageStatus As New Label()
     Private ReadOnly btnPreviousImage As New Button()
     Private ReadOnly btnNextImage As New Button()
-    Private ReadOnly catalogDetailTabs As New TabControl()
-    Private ReadOnly catalogOverviewGrid As New DataGridView()
-    Private ReadOnly catalogSpecificationsGrid As New DataGridView()
-    Private ReadOnly catalogRelatedGrid As New DataGridView()
-    Private ReadOnly catalogAllFieldsGrid As New DataGridView()
     Private ReadOnly catalogSectionsPanel As New FlowLayoutPanel()
     Private ReadOnly txtResult As New TextBox()
     Private ReadOnly txtRaw As New TextBox()
@@ -178,25 +187,31 @@ Public Partial Class MainForm
     Private ReadOnly cboReturnedRecords As New ComboBox()
     Private ReadOnly btnOpenReturnedRecord As New Button()
     Private ReadOnly btnEditRequest As New Button()
+    Private ReadOnly txtSqlConnection As New TextBox()
+    Private ReadOnly btnTestDatabase As New Button()
+    Private ReadOnly btnSaveDatabase As New Button()
+    Private ReadOnly lblDatabaseStatus As New Label()
+    Private DatabaseVerified As Boolean
+    Private CatalogResultEnvironment As String = ""
     Private ReadOnly tabs As New TabControl()
     Private ReadOnly appTooltips As New ToolTip()
 
     Private CurrentOperation As String = "catalog"
     Private LastResult As ApiResult
-    Private LastDocumentUrl As String = ""
     Private ReadOnly DocumentUrls As New List(Of KeyValuePair(Of String, String))()
     Private ReadOnly ReturnedRecordActions As New List(Of ReturnedRecordAction)()
     Private NextOperationId As String = ""
     Private NextFieldKey As String = ""
     Private NextFieldValue As String = ""
-    Private ConnectionVerified As Boolean
     Private RenderingView As Boolean
     Private CurrentViewOperation As String = ""
     Private ReadOnly CatalogImageUrls As New List(Of String)()
     Private ReadOnly CatalogThumbnailCards As New List(Of Panel)()
     Private CatalogImageIndex As Integer = -1
 
+    #End Region
 
+    #Region "03 - Startup and offline checks"
     Public Sub New()
         Text = "Amazon SP-API Workbench - VB.NET"
         StartPosition = FormStartPosition.CenterScreen
@@ -215,6 +230,40 @@ Public Partial Class MainForm
 
     Public Sub RunCiSelfTest()
         If CurrentOperation <> "catalog" Then Throw New InvalidOperationException("Catalogue must be the initial active workflow.")
+        If btnSaveDatabase.Enabled OrElse DatabaseVerified Then Throw New InvalidOperationException("SQL Server save must not be active until the connection has been tested.")
+        If txtSqlConnection.Text <> "" Then Throw New InvalidOperationException("The SQL connection string must not be hardcoded.")
+
+        Dim dbSample As New Dictionary(Of String, Object) From {
+            {"asin", "B07N4M94X4"},
+            {"dimensions", New Object() {
+                New Dictionary(Of String, Object) From {
+                    {"item", New Dictionary(Of String, Object) From {
+                        {"weight", New Dictionary(Of String, Object) From {{"value", 1.25D}, {"unit", "pounds"}}},
+                        {"height", New Dictionary(Of String, Object) From {{"value", 3D}, {"unit", "inches"}}}
+                    }}
+                }
+            }},
+            {"images", New Object() {
+                New Dictionary(Of String, Object) From {
+                    {"images", New Object() {
+                        New Dictionary(Of String, Object) From {{"variant", "MAIN"}, {"link", "https://example.com/image.jpg"}}
+                    }}
+                }
+            }},
+            {"salesRanks", New Object() {
+                New Dictionary(Of String, Object) From {
+                    {"classificationRanks", New Object() {
+                        New Dictionary(Of String, Object) From {{"classificationId", "12345"}}
+                    }}
+                }
+            }}
+        }
+        Dim mapped = InventoryDatabase.MapCatalogItem(dbSample)
+        If mapped.Asin <> "B07N4M94X4" OrElse mapped.Values("Weight") <> "1.25" OrElse
+           mapped.Values("Height") <> "3" OrElse mapped.Values("ProductCatagory") <> "12345" OrElse
+           mapped.Values("ImageURL") <> "https://example.com/image.jpg" OrElse mapped.Values.ContainsKey("Width") Then
+            Throw New InvalidOperationException("Catalogue-to-database mapping failed the offline test.")
+        End If
         If operationTree.SelectedNode Is Nothing OrElse operationTree.SelectedNode.Tag Is Nothing OrElse CStr(operationTree.SelectedNode.Tag) <> "catalog" Then
             Throw New InvalidOperationException("Catalogue must be visibly selected on startup.")
         End If
@@ -621,6 +670,9 @@ Public Partial Class MainForm
         SelectOperation("catalog")
     End Sub
 
+    #End Region
+
+    #Region "04 - Default request values"
     Private Sub InitializeFieldValues()
         FieldValues("catalogMode") = "identifier"
         FieldValues("identifierType") = "ASIN"
@@ -666,7 +718,9 @@ Public Partial Class MainForm
         FieldValues("confirmed") = False
     End Sub
 
-    ' -------------------- Window and controls --------------------
+    #End Region
+
+    #Region "05 - Main window and reusable controls"
     Private Sub BuildUi()
         Dim root As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 1, .RowCount = 2, .Padding = New Padding(12), .BackColor = Color.FromArgb(241, 245, 249)}
         root.RowStyles.Add(New RowStyle(SizeType.AutoSize))
@@ -738,6 +792,7 @@ Public Partial Class MainForm
                                                             InvalidateConnectionState()
                                                             BuildOperationFields()
                                                             ApplyEnvironmentVisualState()
+                                                            UpdateDatabaseControls()
                                                         End Sub
         AddHandler cboMarketplace.SelectedIndexChanged, Sub(sender, e)
                                                             InvalidateConnectionState()
@@ -902,6 +957,9 @@ Public Partial Class MainForm
         appTooltips.SetToolTip(btnRun, "Run the selected operation (Ctrl+Enter)")
         appTooltips.SetToolTip(btnTest, "Verify the selected environment and marketplace credentials")
         appTooltips.SetToolTip(cboEnvironment, "Sandbox uses Amazon test fixtures; Production uses the live seller account")
+        appTooltips.SetToolTip(txtSqlConnection, "Enter the existing FTSSQL SQL Server connection setting. It is masked, kept in memory, and never stored.")
+        appTooltips.SetToolTip(btnTestDatabase, "Test SQL Server read access to InventoryDimensions without changing records.")
+        appTooltips.SetToolTip(btnSaveDatabase, "Preview a selected catalogue ASIN before an explicit database update. Production only.")
         AddHandler Me.KeyDown, AddressOf MainFormKeyDown
     End Sub
 
@@ -1026,10 +1084,6 @@ Public Partial Class MainForm
         viewDetails.DefaultCellStyle.WrapMode = DataGridViewTriState.True
         viewDetails.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.AllCellsExceptHeaders
 
-        BuildCatalogDetailTabs(ink, accent, canvas)
-        viewDetailLayout.Controls.Add(catalogDetailTabs, 0, 2)
-        catalogDetailTabs.Visible = False
-
         catalogSectionsPanel.AutoSize = True
         catalogSectionsPanel.AutoSizeMode = AutoSizeMode.GrowAndShrink
         catalogSectionsPanel.FlowDirection = FlowDirection.TopDown
@@ -1102,63 +1156,38 @@ Public Partial Class MainForm
         AddHandler btnOpenDocument.Click, AddressOf OpenDocument
         viewActions.Controls.Add(btnOpenDocument)
 
-        layout.Controls.Add(viewActions, 0, 3)
-    End Sub
-
-    Private Sub BuildCatalogDetailTabs(ink As Color, accent As Color, canvas As Color)
-        catalogDetailTabs.Dock = DockStyle.Fill
-        catalogDetailTabs.Font = New Font("Segoe UI Semibold", 9.0F, FontStyle.Bold)
-        catalogDetailTabs.Padding = New Point(16, 7)
-
-        Dim tabsAndGrids = New Tuple(Of String, DataGridView)() {
-            Tuple.Create("Overview", catalogOverviewGrid),
-            Tuple.Create("Specifications", catalogSpecificationsGrid),
-            Tuple.Create("Category && related", catalogRelatedGrid),
-            Tuple.Create("All SP-API fields", catalogAllFieldsGrid)
+        Dim lblSqlConnection As New Label With {
+            .Text = "SQL Server (FTSSQL):",
+            .AutoSize = True,
+            .Margin = New Padding(6, 9, 4, 2)
         }
-        For Each entry In tabsAndGrids
-            Dim page As New TabPage(entry.Item1) With {.BackColor = canvas, .Padding = New Padding(8)}
-            ConfigureCatalogDetailGrid(entry.Item2, ink, accent)
-            page.Controls.Add(entry.Item2)
-            catalogDetailTabs.TabPages.Add(page)
-        Next
-    End Sub
+        viewActions.Controls.Add(lblSqlConnection)
 
-    Private Sub ConfigureCatalogDetailGrid(grid As DataGridView, ink As Color, accent As Color)
-        grid.Dock = DockStyle.Fill
-        grid.ReadOnly = True
-        grid.AllowUserToAddRows = False
-        grid.AllowUserToDeleteRows = False
-        grid.AllowUserToResizeRows = False
-        grid.MultiSelect = False
-        grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect
-        grid.RowHeadersVisible = False
-        grid.AutoGenerateColumns = False
-        grid.BackgroundColor = Color.White
-        grid.BorderStyle = BorderStyle.None
-        grid.CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal
-        grid.GridColor = Color.FromArgb(231, 228, 221)
-        grid.EnableHeadersVisualStyles = False
-        grid.ColumnHeadersDefaultCellStyle.BackColor = ink
-        grid.ColumnHeadersDefaultCellStyle.ForeColor = Color.White
-        grid.ColumnHeadersDefaultCellStyle.Font = New Font("Segoe UI Semibold", 9.0F, FontStyle.Bold)
-        grid.ColumnHeadersHeight = 34
-        grid.DefaultCellStyle.WrapMode = DataGridViewTriState.True
-        grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(255, 235, 205)
-        grid.DefaultCellStyle.SelectionForeColor = ink
-        grid.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(252, 250, 246)
-        grid.AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.AllCellsExceptHeaders
-        grid.Columns.Add(New DataGridViewTextBoxColumn With {
-            .Name = "Property",
-            .HeaderText = "Property",
-            .Width = 245,
-            .AutoSizeMode = DataGridViewAutoSizeColumnMode.None
-        })
-        grid.Columns.Add(New DataGridViewTextBoxColumn With {
-            .Name = "Value",
-            .HeaderText = "Value",
-            .AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill
-        })
+        txtSqlConnection.Width = 340
+        txtSqlConnection.UseSystemPasswordChar = True
+        AddHandler txtSqlConnection.TextChanged, AddressOf DatabaseSettingsChanged
+        viewActions.Controls.Add(txtSqlConnection)
+
+        btnTestDatabase.Text = "Test database"
+        btnTestDatabase.AutoSize = True
+        btnTestDatabase.Enabled = False
+        AddHandler btnTestDatabase.Click, Async Sub(sender, e) Await TestDatabaseAsync()
+        viewActions.Controls.Add(btnTestDatabase)
+
+        lblDatabaseStatus.Text = "SQL Server: not configured"
+        lblDatabaseStatus.AutoSize = True
+        lblDatabaseStatus.Margin = New Padding(8, 9, 6, 2)
+        lblDatabaseStatus.ForeColor = Color.DimGray
+        viewActions.Controls.Add(lblDatabaseStatus)
+
+        btnSaveDatabase.Text = "Preview / Save selected ASIN"
+        btnSaveDatabase.AutoSize = True
+        btnSaveDatabase.Visible = False
+        btnSaveDatabase.Enabled = False
+        AddHandler btnSaveDatabase.Click, Async Sub(sender, e) Await PreviewAndSaveDatabaseAsync()
+        viewActions.Controls.Add(btnSaveDatabase)
+
+        layout.Controls.Add(viewActions, 0, 3)
     End Sub
 
     Private Sub BuildCatalogHero(ink As Color, accent As Color, canvas As Color)
@@ -1391,9 +1420,9 @@ Public Partial Class MainForm
         lblOperation.Text = operation.Label
         UpdateRunButtonPresentation()
         BuildOperationFields()
-        txtResult.Text = If(operation.Kind = "legacy", "This Microsoft Access database utility is not part of the portable SP-API connection.", "Run the selected request to see a readable result here.")
+        txtResult.Text = If(operation.Kind = "legacy", "This SQL Server utility is separate from Amazon SP-API and remains disconnected.", "Run the selected request to see a readable result here.")
         txtRaw.Text = If(operation.Kind = "legacy", "", "The complete Amazon response will appear here.")
-        ClearResultView(If(operation.Kind = "legacy", "Legacy utility", operation.Label), If(operation.Kind = "legacy", "This Microsoft Access utility is intentionally disconnected.", "Run the request to see the returned data here."))
+        ClearResultView(If(operation.Kind = "legacy", "Legacy utility", operation.Label), If(operation.Kind = "legacy", "This legacy SQL Server utility is not yet connected.", "Run the request to see the returned data here."))
         lblMeta.Text = ""
         btnOpenDocument.Visible = False
         cboDocuments.Visible = False
@@ -1410,7 +1439,9 @@ Public Partial Class MainForm
         btnRun.Enabled = operation.Kind <> "legacy"
     End Sub
 
-    ' -------------------- Request-form UX --------------------
+    #End Region
+
+    #Region "06 - Request forms and field binding"
     Private Sub BuildOperationFields()
         If requestPanel Is Nothing Then Return
         requestPanel.SuspendLayout()
@@ -1568,7 +1599,7 @@ Public Partial Class MainForm
             Case "billOfLading"
                 AddText("shipmentId", "Shipment ID", True)
             Case "legacyConvert", "legacyFc"
-                AddNote("This is not an SP-API request. It depends on the old Microsoft Access (.accdb/.mdb) database/tables and business rules, so it remains intentionally disconnected just like the current workbench.")
+                AddNote("This is a legacy SQL Server utility, not an SP-API request. Its existing business rules are not yet connected.")
         End Select
         ApplyEnvironmentVisualState()
         requestPanel.ResumeLayout()
@@ -1802,6 +1833,9 @@ Public Partial Class MainForm
         lblConnection.BackColor = background
     End Sub
 
+    #End Region
+
+    #Region "07 - Guidance, sample data and safety"
     Private Function OperationHelp(operation As String) As String
         Select Case operation
             Case "catalog" : Return "Find a catalogue item by ASIN/SKU/other identifier, or search by keywords. Related ASIN fetching is optional."
@@ -1826,7 +1860,7 @@ Public Partial Class MainForm
             Case "itemLabels" : Return "Request FBA item labels for the entered MSKUs and quantities."
             Case "shipmentLabels" : Return "Request shipment/carton/pallet labels for an existing FBA shipment."
             Case "billOfLading" : Return "Request the bill of lading document for an existing FBA shipment."
-            Case "legacyConvert", "legacyFc" : Return "Legacy company-specific Microsoft Access utility. It remains disconnected until the .accdb/.mdb file, table names, and existing Access queries are mapped."
+            Case "legacyConvert", "legacyFc" : Return "Legacy SQL Server utility. Its conversion or bulk-update business rules have not yet been provided, so this option remains disconnected."
         End Select
         Return ""
     End Function
@@ -1841,7 +1875,6 @@ Public Partial Class MainForm
     End Sub
 
     Private Sub InvalidateConnectionState()
-        ConnectionVerified = False
         CachedAccessToken = ""
         CachedAccessTokenExpiresUtc = DateTimeOffset.MinValue
         ClearWriteConfirmation()
@@ -2040,7 +2073,9 @@ Public Partial Class MainForm
         Return txtClientId.Text.Trim().Length > 0 AndAlso txtClientSecret.Text.Trim().Length > 0 AndAlso txtRefreshToken.Text.Trim().Length > 0
     End Function
 
-    ' -------------------- User actions and workflow orchestration --------------------
+    #End Region
+
+    #Region "08 - Authentication checks and request execution"
     Private Async Function TestConnectionAsync() As Task
         If Not CredentialsReady() Then
             MessageBox.Show("Client ID, client secret, and refresh token are required.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning)
@@ -2051,21 +2086,17 @@ Public Partial Class MainForm
         Try
             Dim probe = Await TestConnectionRequestAsync()
             If Not probe.Ok Then
-                ConnectionVerified = False
                 SetConnectionStatus("Connection failed - see Result", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
                 ShowResult("connection", probe)
                 Return
             End If
 
-            ConnectionVerified = True
             SetConnectionStatus("Connected to " & EnvironmentName() & " - " & SelectedMarketplace().Name, Color.FromArgb(22, 101, 52), Color.FromArgb(240, 253, 244))
             ShowResult("connection", probe)
         Catch ex As AppException
-            ConnectionVerified = False
             SetConnectionStatus("Connection failed - see Result", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
             ShowResult("connection", LocalFailure(ex))
         Catch ex As Exception
-            ConnectionVerified = False
             SetConnectionStatus("Connection failed - see Result", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
             ShowResult("connection", LocalFailure(New AppException(ex.Message, 500, "CONNECTION_TEST_FAILED", ex.ToString())))
         Finally
@@ -2076,7 +2107,7 @@ Public Partial Class MainForm
     Private Async Function RunCurrentAsync() As Task
         SaveVisibleFieldValues()
         If CurrentOperation = "legacyConvert" OrElse CurrentOperation = "legacyFc" Then
-            MessageBox.Show("This Microsoft Access database utility is intentionally not connected in the portable SP-API workbench.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information)
+            MessageBox.Show("This legacy SQL Server utility is not yet connected; only the InventoryDimensions catalogue update has been implemented.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information)
             Return
         End If
         If Not CredentialsReady() Then
@@ -2103,7 +2134,6 @@ Public Partial Class MainForm
         End If
 
         ToggleBusy(True, "Waiting for Amazon...")
-        LastDocumentUrl = ""
         btnOpenDocument.Visible = False
         Try
             Dim result = Await ExecuteOperationAsync(CurrentOperation)
@@ -2143,19 +2173,16 @@ Public Partial Class MainForm
         Dim code = If(result.Problem Is Nothing, "", result.Problem.Code).ToLowerInvariant()
 
         If result.Status = 401 OrElse code.Contains("invalid_grant") OrElse code.Contains("invalid_client") OrElse code.Contains("lwa_") Then
-            ConnectionVerified = False
             SetConnectionStatus("Authentication failed - see Result", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
             Return
         End If
 
         If code.Contains("amazon_network_error") OrElse code.Contains("amazon_timeout") OrElse code.Contains("no_response") Then
-            ConnectionVerified = False
             SetConnectionStatus("Connection problem - see Result", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
             Return
         End If
 
         If result.Ok OrElse result.RequestId <> "" Then
-            ConnectionVerified = True
             SetConnectionStatus("Connected to " & EnvironmentName() & " - " & SelectedMarketplace().Name, Color.FromArgb(22, 101, 52), Color.FromArgb(240, 253, 244))
         End If
     End Sub
@@ -2201,12 +2228,15 @@ Public Partial Class MainForm
         sb.Append(Serializer.Serialize(value))
     End Sub
 
-    ' -------------------- Readable result view --------------------
+    #End Region
+
+    #Region "09 - Result view and catalogue presentation"
     Private Sub ClearResultView(title As String, subtitle As String)
         RenderingView = True
         Try
             CurrentViewOperation = ""
             SetCatalogViewMode(False)
+            UpdateDatabaseControls()
             lblViewTitle.Text = title
             lblViewSubtitle.Text = subtitle
             lblViewDetails.Text = "Details"
@@ -2385,7 +2415,6 @@ Public Partial Class MainForm
 
     Private Sub SetCatalogViewMode(enabled As Boolean)
         catalogHero.Visible = enabled
-        catalogDetailTabs.Visible = False
         catalogSectionsPanel.Visible = enabled
         viewDetails.Visible = Not enabled
         If viewDetailLayout.RowStyles.Count >= 2 Then
@@ -2902,77 +2931,6 @@ Public Partial Class MainForm
         Return rows
     End Function
 
-    Private Sub RenderCatalogDetailSections(item As Dictionary(Of String, Object))
-        For Each grid In New DataGridView() {catalogOverviewGrid, catalogSpecificationsGrid, catalogRelatedGrid, catalogAllFieldsGrid}
-            grid.Rows.Clear()
-        Next
-
-        Dim summary = FirstDictionary(item, "summaries")
-        Dim productType = FirstDictionary(item, "productTypes")
-        AddCatalogSection(catalogOverviewGrid, "Product identity")
-        AddCatalogValue(catalogOverviewGrid, "ASIN", StringValue(GetValue(item, "asin")))
-        AddCatalogValue(catalogOverviewGrid, "Title", FirstNonEmpty(CatalogTitle(item), FirstCatalogAttribute(item, "item_name")))
-        AddCatalogValue(catalogOverviewGrid, "Brand", FirstNonEmpty(StringValue(GetValue(summary, "brand")), FirstCatalogAttribute(item, "brand")))
-        AddCatalogValue(catalogOverviewGrid, "Manufacturer", FirstNonEmpty(StringValue(GetValue(summary, "manufacturer")), FirstCatalogAttribute(item, "manufacturer")))
-        AddCatalogValue(catalogOverviewGrid, "Model number", FirstNonEmpty(StringValue(GetValue(summary, "modelNumber")), FirstCatalogAttribute(item, "model_number")))
-        AddCatalogValue(catalogOverviewGrid, "Part number", FirstNonEmpty(StringValue(GetValue(summary, "partNumber")), FirstCatalogAttribute(item, "part_number")))
-        AddCatalogValue(catalogOverviewGrid, "Product type", FriendlyToken(StringValue(GetValue(productType, "productType"))))
-        AddCatalogValue(catalogOverviewGrid, "Marketplace", StringValue(GetValue(summary, "marketplaceId")))
-        AddCatalogValue(catalogOverviewGrid, "Package quantity", ViewValue(GetValue(summary, "packageQuantity")))
-
-        Dim description = CatalogDescription(item)
-        If description <> "" Then
-            AddCatalogSection(catalogOverviewGrid, "Description and highlights")
-            AddCatalogValue(catalogOverviewGrid, "Product description", description)
-        End If
-        If HasCatalogContent(GetValue(item, "identifiers")) Then
-            AddCatalogSection(catalogOverviewGrid, "Identifiers")
-            AddCatalogObjectRows(catalogOverviewGrid, GetValue(item, "identifiers"), "", 80)
-        End If
-        If CatalogImageUrls.Count > 0 Then
-            AddCatalogSection(catalogOverviewGrid, "Media")
-            AddCatalogValue(catalogOverviewGrid, "Product images", CatalogImageUrls.Count.ToString(CultureInfo.InvariantCulture) & " image(s) returned by Amazon")
-        End If
-
-        Dim attributes = AsDict(GetValue(item, "attributes"))
-        Dim descriptiveKeys As New HashSet(Of String)({"item_name", "brand", "manufacturer", "model_number", "part_number", "product_description", "bullet_point", "special_feature", "special_features"}, StringComparer.OrdinalIgnoreCase)
-        If attributes.Count > 0 Then
-            AddCatalogSection(catalogSpecificationsGrid, "Product specifications")
-            For Each pair In attributes.OrderBy(Function(entry) entry.Key)
-                If descriptiveKeys.Contains(pair.Key) Then Continue For
-                Dim values = CatalogAttributeValues(item, pair.Key)
-                If values.Count > 0 Then
-                    AddCatalogValue(catalogSpecificationsGrid, PrettyFieldPath(pair.Key), String.Join(Environment.NewLine, values))
-                Else
-                    AddCatalogObjectRows(catalogSpecificationsGrid, pair.Value, pair.Key, 40)
-                End If
-            Next
-        End If
-        If HasCatalogContent(GetValue(item, "dimensions")) Then
-            AddCatalogSection(catalogSpecificationsGrid, "Measurements")
-            AddCatalogObjectRows(catalogSpecificationsGrid, GetValue(item, "dimensions"), "", 100)
-        End If
-        If catalogSpecificationsGrid.Rows.Count = 0 Then AddCatalogValue(catalogSpecificationsGrid, "Specifications", "Amazon returned no specification attributes for this product.")
-
-        AddCatalogSectionIfPresent(catalogRelatedGrid, "Classification", GetValue(item, "classifications"), 100)
-        AddCatalogSectionIfPresent(catalogRelatedGrid, "Category and sales rank", GetValue(item, "salesRanks"), 120)
-        AddCatalogSectionIfPresent(catalogRelatedGrid, "Related products and variations", GetValue(item, "relationships"), 120)
-        AddCatalogSectionIfPresent(catalogRelatedGrid, "Vendor details", GetValue(item, "vendorDetails"), 120)
-        If catalogRelatedGrid.Rows.Count = 0 Then AddCatalogValue(catalogRelatedGrid, "Related data", "Amazon returned no classification, sales-rank, relationship, or vendor records.")
-
-        AddCatalogSection(catalogAllFieldsGrid, "Complete Amazon SP-API response")
-        AddCatalogObjectRows(catalogAllFieldsGrid, item, "", 1000)
-        For Each grid In New DataGridView() {catalogOverviewGrid, catalogSpecificationsGrid, catalogRelatedGrid, catalogAllFieldsGrid}
-            If grid.Rows.Count > 0 Then grid.ClearSelection()
-        Next
-    End Sub
-
-    Private Sub AddCatalogSectionIfPresent(grid As DataGridView, title As String, value As Object, maxRows As Integer)
-        If Not HasCatalogContent(value) Then Return
-        AddCatalogSection(grid, title)
-        AddCatalogObjectRows(grid, value, "", maxRows)
-    End Sub
-
     Private Function HasCatalogContent(value As Object) As Boolean
         If value Is Nothing Then Return False
         Dim dict = TryCast(value, Dictionary(Of String, Object))
@@ -2981,32 +2939,9 @@ Public Partial Class MainForm
         Return Not String.IsNullOrWhiteSpace(ViewValue(value))
     End Function
 
-    Private Sub AddCatalogSection(grid As DataGridView, title As String)
-        Dim index = grid.Rows.Add(title.ToUpperInvariant(), "")
-        Dim row = grid.Rows(index)
-        row.Height = 36
-        row.ReadOnly = True
-        row.DefaultCellStyle.BackColor = Color.FromArgb(235, 241, 255)
-        row.DefaultCellStyle.ForeColor = Color.FromArgb(30, 64, 175)
-        row.DefaultCellStyle.Font = New Font("Segoe UI Semibold", 9.0F, FontStyle.Bold)
-        row.DefaultCellStyle.SelectionBackColor = Color.FromArgb(235, 241, 255)
-        row.DefaultCellStyle.SelectionForeColor = Color.FromArgb(30, 64, 175)
-    End Sub
+    #End Region
 
-    Private Sub AddCatalogValue(grid As DataGridView, field As String, value As String)
-        If String.IsNullOrWhiteSpace(value) Then Return
-        grid.Rows.Add(field, value)
-    End Sub
-
-    Private Sub AddCatalogObjectRows(grid As DataGridView, value As Object, prefix As String, maxRows As Integer)
-        Dim rows As New List(Of KeyValuePair(Of String, String))()
-        FlattenViewValue(value, prefix, rows, 0)
-        For Each row In rows.Take(maxRows)
-            AddCatalogValue(grid, PrettyFieldPath(row.Key), FriendlyDetailValue(row.Key, row.Value))
-        Next
-        If rows.Count > maxRows Then AddCatalogValue(grid, "More fields", (rows.Count - maxRows).ToString(CultureInfo.InvariantCulture) & " additional field(s) remain available in All SP-API fields and Raw response.")
-    End Sub
-
+    #Region "10 - Operation-specific result displays"
     Private Sub RenderFeesView(data As Dictionary(Of String, Object))
         lblViewTitle.Text = "Fee estimate"
         Dim payload = AsDict(GetValue(data, "payload"))
@@ -3444,23 +3379,6 @@ Public Partial Class MainForm
         Next
     End Sub
 
-    Private Sub RenderGenericListView(title As String, subtitle As String, records As List(Of Object), fallback As Object)
-        lblViewTitle.Text = title
-        lblViewSubtitle.Text = subtitle & If(records.Count > 0, " · " & records.Count.ToString(CultureInfo.InvariantCulture) & " record(s)", "")
-        If records.Count = 0 Then
-            viewSplit.Panel1Collapsed = True
-            RenderDetailsFromObject(fallback)
-            Return
-        End If
-
-        ConfigureViewTable(Tuple.Create("Record", 100))
-        For i As Integer = 0 To records.Count - 1
-            Dim record = records(i)
-            AddViewRow(record, RecordSummary(record, i + 1))
-        Next
-        viewSplit.Panel1Collapsed = False
-    End Sub
-
     Private Sub RenderObjectView(title As String, subtitle As String, value As Object)
         lblViewTitle.Text = If(String.IsNullOrWhiteSpace(title), "Result", title)
         lblViewSubtitle.Text = subtitle
@@ -3468,6 +3386,9 @@ Public Partial Class MainForm
         RenderDetailsFromObject(value)
     End Sub
 
+    #End Region
+
+    #Region "11 - Shared result display helpers"
     Private Sub ConfigureViewTable(ParamArray columns() As Tuple(Of String, Integer))
         viewGrid.Rows.Clear()
         viewGrid.Columns.Clear()
@@ -3499,6 +3420,7 @@ Public Partial Class MainForm
         If source Is Nothing Then Return
         If CurrentViewOperation = "catalog" Then
             RenderCatalogProductDetail(AsDict(source))
+            UpdateDatabaseControls()
         Else
             lblViewDetails.Text = "Selected record details"
             RenderDetailsFromObject(source)
@@ -3720,19 +3642,91 @@ Public Partial Class MainForm
         Return New List(Of Object)()
     End Function
 
-    Private Function RecordSummary(value As Object, index As Integer) As String
-        Dim dict = AsDict(value)
-        If dict.Count = 0 Then Return "Record " & index.ToString(CultureInfo.InvariantCulture)
-        For Each key In {"asin", "orderId", "amazonOrderId", "reportId", "feedId", "inboundPlanId", "shipmentId", "msku", "sellerSku", "name"}
-            Dim found = StringValue(GetValue(dict, key))
-            If found <> "" Then Return found
-        Next
-        Return "Record " & index.ToString(CultureInfo.InvariantCulture)
+    #End Region
+
+    #Region "12 - SQL Server inventory connection and saving"
+    Private Sub DatabaseSettingsChanged(sender As Object, e As EventArgs)
+        DatabaseVerified = False
+        lblDatabaseStatus.Text = "SQL Server: connection not tested"
+        UpdateDatabaseControls()
+    End Sub
+
+    Private Async Function TestDatabaseAsync() As Task
+        Dim connectionString = txtSqlConnection.Text
+        If String.IsNullOrWhiteSpace(connectionString) Then Return
+        btnTestDatabase.Enabled = False
+        lblDatabaseStatus.Text = "Testing InventoryDimensions..."
+        Try
+            Dim status = Await Task.Run(Function() InventoryDatabase.TestConnection(connectionString))
+            If Not String.Equals(connectionString, txtSqlConnection.Text, StringComparison.Ordinal) Then Return
+            DatabaseVerified = True
+            lblDatabaseStatus.Text = "SQL Server: connected"
+            MessageBox.Show(status, "SQL Server connection", MessageBoxButtons.OK, MessageBoxIcon.Information)
+        Catch ex As Exception
+            DatabaseVerified = False
+            lblDatabaseStatus.Text = "SQL Server: connection failed"
+            MessageBox.Show(ex.Message, "SQL Server connection failed", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        Finally
+            UpdateDatabaseControls()
+        End Try
     End Function
 
-    ' -------------------- Results and follow-up UX --------------------
+    Private Function SelectedCatalogItemForDatabase() As Dictionary(Of String, Object)
+        If CurrentViewOperation <> "catalog" OrElse LastResult Is Nothing OrElse Not LastResult.Ok OrElse
+           CatalogResultEnvironment <> "production" OrElse IsSandbox() Then Return Nothing
+        If viewGrid.SelectedRows.Count > 0 Then Return AsDict(viewGrid.SelectedRows(0).Tag)
+        Dim items = ListValue(GetValue(AsDict(LastResult.Data), "items"))
+        If items.Count = 1 Then Return AsDict(items(0))
+        Return Nothing
+    End Function
+
+    Private Sub UpdateDatabaseControls()
+        btnTestDatabase.Enabled = Not String.IsNullOrWhiteSpace(txtSqlConnection.Text)
+        btnSaveDatabase.Visible = CurrentViewOperation = "catalog" AndAlso LastResult IsNot Nothing AndAlso LastResult.Ok
+        btnSaveDatabase.Enabled = DatabaseVerified AndAlso btnSaveDatabase.Visible AndAlso
+                                  SelectedCatalogItemForDatabase() IsNot Nothing
+        If btnSaveDatabase.Visible Then
+            btnSaveDatabase.Text = If(IsSandbox(), "Save disabled in Sandbox", "Preview / Save selected ASIN")
+        End If
+    End Sub
+
+    Private Async Function PreviewAndSaveDatabaseAsync() As Task
+        If Not DatabaseVerified OrElse IsSandbox() Then
+            MessageBox.Show("Test a SQL Server connection first. Only Production catalogue results can be saved.", "Database save", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+        Dim selectedItem = SelectedCatalogItemForDatabase()
+        If selectedItem Is Nothing Then Return
+        Dim product = InventoryDatabase.MapCatalogItem(selectedItem)
+        Dim connectionString = txtSqlConnection.Text
+        btnSaveDatabase.Enabled = False
+        Try
+            Dim preview = Await Task.Run(Function() InventoryDatabase.Preview(connectionString, product))
+            If Not DatabaseVerified OrElse IsSandbox() OrElse SelectedCatalogItemForDatabase() Is Nothing OrElse
+               Not String.Equals(connectionString, txtSqlConnection.Text, StringComparison.Ordinal) Then Return
+            Dim answer = MessageBox.Show(preview & Environment.NewLine &
+                                         "Back up the SQL Server database before its first write." & Environment.NewLine &
+                                         "Save this ASIN now?",
+                                         "Review InventoryDimensions change", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2)
+            If answer <> DialogResult.Yes Then Return
+            If Not DatabaseVerified OrElse IsSandbox() OrElse SelectedCatalogItemForDatabase() Is Nothing OrElse
+               Not String.Equals(connectionString, txtSqlConnection.Text, StringComparison.Ordinal) Then Return
+            Dim outcome = Await Task.Run(Function() InventoryDatabase.Save(connectionString, product))
+            lblDatabaseStatus.Text = "SQL Server: saved " & product.Asin
+            MessageBox.Show(outcome, "InventoryDimensions updated", MessageBoxButtons.OK, MessageBoxIcon.Information)
+        Catch ex As Exception
+            MessageBox.Show("The SQL Server save could not be confirmed. " & ex.Message, "Database save failed", MessageBoxButtons.OK, MessageBoxIcon.Error)
+        Finally
+            UpdateDatabaseControls()
+        End Try
+    End Function
+
+    #End Region
+
+    #Region "13 - Summaries, documents and follow-up actions"
     Private Sub ShowResult(operation As String, result As ApiResult)
         LastResult = result
+        CatalogResultEnvironment = If(operation = "catalog" AndAlso result.Ok, EnvironmentName(), "")
         lblMeta.Text = result.Status.ToString(CultureInfo.InvariantCulture) & " " & result.StatusText & If(result.DurationMs > 0, "  |  " & result.DurationMs.ToString(CultureInfo.InvariantCulture) & " ms", "") & If(result.RequestId <> "", "  |  Request " & result.RequestId, "") & If(result.RateLimit <> "", "  |  " & result.RateLimit & " req/s", "")
         Dim requestInfo As New Dictionary(Of String, Object) From {
             {"method", If(result.RequestMethod = "", Nothing, result.RequestMethod)},
@@ -3750,9 +3744,9 @@ Public Partial Class MainForm
         txtRaw.Text = PrettyJson(envelope)
         txtResult.Text = BuildSummary(operation, result)
         RenderResultView(operation, result)
+        UpdateDatabaseControls()
         DocumentUrls.Clear()
         DocumentUrls.AddRange(FindDocumentUrls(result.Data))
-        LastDocumentUrl = If(DocumentUrls.Count > 0, DocumentUrls(0).Value, "")
 
         cboDocuments.Items.Clear()
         For Each document In DocumentUrls
@@ -3903,12 +3897,6 @@ Public Partial Class MainForm
                 End If
         End Select
     End Sub
-
-    Private Function FindDocumentUrl(dataObj As Object) As String
-        Dim documents = FindDocumentUrls(dataObj)
-        If documents.Count = 0 Then Return ""
-        Return documents(0).Value
-    End Function
 
     Private Function FindDocumentUrls(dataObj As Object) As List(Of KeyValuePair(Of String, String))
         Dim output As New List(Of KeyValuePair(Of String, String))()
@@ -4193,13 +4181,15 @@ Public Partial Class MainForm
 
         Dim index = cboDocuments.SelectedIndex
         If index < 0 OrElse index >= DocumentUrls.Count Then index = 0
-        LastDocumentUrl = DocumentUrls(index).Value
-        If LastDocumentUrl = "" Then Return
+        Dim documentUrl = DocumentUrls(index).Value
+        If documentUrl = "" Then Return
 
         Try
-            Process.Start(LastDocumentUrl)
+            Process.Start(documentUrl)
         Catch ex As Exception
             MessageBox.Show("Could not open the document URL: " & ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error)
         End Try
     End Sub
+    #End Region
+
 End Class
