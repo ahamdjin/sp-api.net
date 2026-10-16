@@ -501,6 +501,41 @@ Friend NotInheritable Class InventoryDatabase
                 refused = True
             End Try
             If Not refused Then Throw New InvalidOperationException("ASIN validation failed to reject unsafe identifiers.")
+
+            ' Real deployments might store dimensions as numbers and category IDs as integers.
+            Using connection As New SqlConnection(connectionString)
+                connection.Open()
+                Using command As New SqlCommand(
+                    "ALTER TABLE [dbo].[InventoryDimensions] ALTER COLUMN [Weight] decimal(12,3) NULL; " &
+                    "ALTER TABLE [dbo].[InventoryDimensions] ALTER COLUMN [ProductCatagory] int NULL", connection)
+                    command.ExecuteNonQuery()
+                End Using
+            End Using
+            Dim typed As New ProductRecord With {.Asin = "B07N4M94X4"}
+            typed.Values("Weight") = "4.125"
+            typed.Values("ProductCatagory") = "67890"
+            If Not Save(connectionString, typed).Contains("Updated") Then
+                Throw New InvalidOperationException("Numeric SQL column update did not complete.")
+            End If
+            Using connection As New SqlConnection(connectionString)
+                connection.Open()
+                Dim saved = ReadExisting(connection, typed.Asin)
+                If Convert.ToDecimal(saved("Weight"), CultureInfo.InvariantCulture) <> 4.125D OrElse
+                   Convert.ToInt32(saved("ProductCatagory"), CultureInfo.InvariantCulture) <> 67890 OrElse
+                   Convert.ToDecimal(saved("Width"), CultureInfo.InvariantCulture) <> 4D Then
+                    Throw New InvalidOperationException("Numeric SQL columns were not mapped or preserved correctly.")
+                End If
+                Using command As New SqlCommand("ALTER TABLE [dbo].[InventoryDimensions] DROP COLUMN [ImageURL]", connection)
+                    command.ExecuteNonQuery()
+                End Using
+            End Using
+            refused = False
+            Try
+                TestConnection(connectionString)
+            Catch ex As InvalidOperationException
+                refused = True
+            End Try
+            If Not refused Then Throw New InvalidOperationException("Missing required SQL Server columns were not detected.")
         Finally
             If created Then
                 Using master As New SqlConnection(masterBuilder.ConnectionString)
