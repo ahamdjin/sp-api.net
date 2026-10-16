@@ -19,6 +19,8 @@ The .sln and .vbproj files are Visual Studio scaffolding, not extra code files.
 
 ## Everyday use
 
+Project Properties > Settings includes `FTSSQL`, `ClientId`, `ClientSecret`, and `RefreshToken`. The app loads these defaults at startup. Catalogue item and United States are the initial operation and marketplace; Sandbox remains the safe initial environment. Amazon credential defaults are blank. Settings are plain text: keep real credentials local and never commit them to GitHub. Editing fields in the running app changes only that session. Deploy `SP-API.NET.exe.config` alongside the executable to retain configured settings.
+
 Enter Client ID, Client Secret and Refresh Token; select Sandbox or Production and marketplace; click **Test connection**. Choose an operation and run it. See the readable **View** tab by default. Summary and Raw response remain available if needed. Sandbox examples are populated only by explicitly clicking **Load Sandbox example**. Live write operations require confirmation.
 
 ## SQL Server inventory updates
@@ -26,7 +28,7 @@ Enter Client ID, Client Secret and Refresh Token; select Sandbox or Production a
 Joel has confirmed that the existing `InventoryDimensions` table is stored in **SQL Server**, not directly in Access. The original VB.NET method used `SqlConnection` and the application setting `FTSSQL`. The SQL Server connection for both reads and writes now lives entirely in `Database.vb`.
 
 For a **Production** Amazon catalogue result:
-1. Enter the existing SQL Server connection setting (such as `FTSSQL`) in the **SQL Server (FTSSQL)** field in the View footer. The field is masked and the app does not save the setting. **Never share database passwords or connection strings publicly.**
+1. Set `FTSSQL` in Project Properties > Settings, or enter a session override in the **SQL Server (FTSSQL)** field in the View footer. The default points to the local `SPAPI_LocalTest` database using Windows Authentication. **Never share database passwords or connection strings publicly.**
 2. Click **Test database**. This checks the `InventoryDimensions` columns and read access without changing any records.
 3. Select one returned ASIN and click **Preview / Save selected ASIN**.
 4. Review whether this will INSERT or UPDATE the ASIN, inspect the values/units, and confirm the write.

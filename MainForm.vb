@@ -223,6 +223,10 @@ Public Partial Class MainForm
         KeyPreview = True
         InitializeFieldValues()
         BuildUi()
+        txtClientId.Text = My.Settings.ClientId
+        txtClientSecret.Text = My.Settings.ClientSecret
+        txtRefreshToken.Text = My.Settings.RefreshToken
+        txtSqlConnection.Text = My.Settings.FTSSQL
         BuildOperationTree()
         SelectOperation("catalog")
         NavigateToOperation("catalog")
@@ -231,7 +235,8 @@ Public Partial Class MainForm
     Public Sub RunCiSelfTest()
         If CurrentOperation <> "catalog" Then Throw New InvalidOperationException("Catalogue must be the initial active workflow.")
         If btnSaveDatabase.Enabled OrElse DatabaseVerified Then Throw New InvalidOperationException("SQL Server save must not be active until the connection has been tested.")
-        If txtSqlConnection.Text <> "" Then Throw New InvalidOperationException("The SQL connection string must not be hardcoded.")
+        If txtSqlConnection.Text <> My.Settings.FTSSQL Then Throw New InvalidOperationException("The SQL connection must load from project settings.")
+        If SelectedMarketplace().Id <> "ATVPDKIKX0DER" Then Throw New InvalidOperationException("USA must be the default marketplace.")
 
         Dim dbSample As New Dictionary(Of String, Object) From {
             {"asin", "B07N4M94X4"},
@@ -957,7 +962,7 @@ Public Partial Class MainForm
         appTooltips.SetToolTip(btnRun, "Run the selected operation (Ctrl+Enter)")
         appTooltips.SetToolTip(btnTest, "Verify the selected environment and marketplace credentials")
         appTooltips.SetToolTip(cboEnvironment, "Sandbox uses Amazon test fixtures; Production uses the live seller account")
-        appTooltips.SetToolTip(txtSqlConnection, "Enter the existing FTSSQL SQL Server connection setting. It is masked, kept in memory, and never stored.")
+        appTooltips.SetToolTip(txtSqlConnection, "Loaded from Project Properties > Settings > FTSSQL. Changes here apply to this session only.")
         appTooltips.SetToolTip(btnTestDatabase, "Test SQL Server read access to InventoryDimensions without changing records.")
         appTooltips.SetToolTip(btnSaveDatabase, "Preview a selected catalogue ASIN before an explicit database update. Production only.")
         AddHandler Me.KeyDown, AddressOf MainFormKeyDown
