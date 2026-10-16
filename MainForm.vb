@@ -23,6 +23,16 @@ Module Program
         Application.EnableVisualStyles()
         Application.SetCompatibleTextRenderingDefault(False)
 
+        If String.Equals(Environment.GetEnvironmentVariable("SP_API_CI_SQL_SMOKE"), "1", StringComparison.Ordinal) Then
+            Try
+                InventoryDatabase.RunCiSqlIntegrationTests()
+            Catch ex As Exception
+                File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "sql-smoke-error.txt"), ex.ToString())
+                Environment.ExitCode = 1
+            End Try
+            Return
+        End If
+
         If String.Equals(Environment.GetEnvironmentVariable("SP_API_CI_SMOKE"), "1", StringComparison.Ordinal) Then
             Try
                 Using form As New MainForm()
