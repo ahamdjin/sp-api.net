@@ -454,6 +454,17 @@ Friend NotInheritable Class InventoryDatabase
 
     #End Region
 
+    Private NotInheritable Class ImmediateBulkProgress
+        Implements IProgress(Of BulkProgress)
+        Private ReadOnly Received As List(Of BulkProgress)
+        Public Sub New(records As List(Of BulkProgress))
+            Received = records
+        End Sub
+        Public Sub Report(value As BulkProgress) Implements IProgress(Of BulkProgress).Report
+            Received.Add(value)
+        End Sub
+    End Class
+
     #Region "04 - Disposable SQL Server integration test (CI only)"
     Friend Shared Sub RunCiSqlIntegrationTests()
         If Environment.GetEnvironmentVariable("SP_API_CI_SQL_SMOKE") <> "1" Then
@@ -591,6 +602,46 @@ Friend NotInheritable Class InventoryDatabase
                 refused = True
             End Try
             If Not refused Then Throw New InvalidOperationException("ASIN validation failed to reject unsafe identifiers.")
+
+            ' Mixed bulk batch: an invalid record rolls back, a subsequent record
+            ' inserts, an existing record updates and a repeated ASIN is skipped.
+            Dim badBatch As New ProductRecord With {.Asin = "B07N4M94X4"}
+            badBatch.Values("Weight") = "999"
+            badBatch.Values("ImageURL") = New String("X"c, 1050)
+            Dim newBatch As New ProductRecord With {.Asin = "B07N4M94X5"}
+            newBatch.Values("Weight") = "1.1"
+            Dim changedBatch As New ProductRecord With {.Asin = "B07N4M94X4"}
+            changedBatch.Values("Weight") = "3.75"
+            Dim duplicateBatch As New ProductRecord With {.Asin = "b07n4m94x5"}
+            duplicateBatch.Values("Weight") = "999"
+            Dim batch As New List(Of ProductRecord) From {badBatch, newBatch, changedBatch, duplicateBatch}
+            refused = False
+            Try
+                SaveBulk("", batch, True)
+            Catch ex As InvalidOperationException
+                refused = ex.Message.Contains("Sandbox database writes are disabled")
+            End Try
+            If Not refused Then Throw New InvalidOperationException("Sandbox bulk writes must fail before opening SQL.")
+            Dim received As New List(Of BulkProgress)()
+            Dim observer As IProgress(Of BulkProgress) = New ImmediateBulkProgress(received)
+            Dim bulk = SaveBulk(connectionString, batch, False, observer)
+            If bulk.Total <> 4 OrElse bulk.Inserted <> 1 OrElse bulk.Updated <> 1 OrElse
+               bulk.Failed <> 1 OrElse bulk.Skipped <> 1 OrElse bulk.Lines.Count <> 4 OrElse received.Count <> 4 Then
+                Throw New InvalidOperationException("Mixed bulk counts/progress are incorrect. Inserted=" &
+                    bulk.Inserted.ToString() & " Updated=" & bulk.Updated.ToString() &
+                    " Failed=" & bulk.Failed.ToString() & " Skipped=" & bulk.Skipped.ToString())
+            End If
+            Using connection As New SqlConnection(connectionString)
+                connection.Open()
+                Dim existingBulk = ReadExisting(connection, "B07N4M94X4")
+                Dim insertedBulk = ReadExisting(connection, "B07N4M94X5")
+                If existingBulk Is Nothing OrElse insertedBulk Is Nothing OrElse
+                   Convert.ToDecimal(existingBulk("Weight"), CultureInfo.InvariantCulture) <> 3.75D OrElse
+                   Convert.ToDecimal(existingBulk("Height"), CultureInfo.InvariantCulture) <> 3D OrElse
+                   Convert.ToDecimal(insertedBulk("Weight"), CultureInfo.InvariantCulture) <> 1.1D Then
+                    Throw New InvalidOperationException("Bulk insert/update/rollback/preserve verification failed.")
+                End If
+            End Using
 
             ' Real deployments might store dimensions as numbers and category IDs as integers.
             Using connection As New SqlConnection(connectionString)
