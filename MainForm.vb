@@ -1728,7 +1728,8 @@ Public Partial Class MainForm
         Try
             Dim probe = Await TestConnectionRequestAsync()
             If Not probe.Ok Then
-                SetConnectionStatus("Connection failed — see details", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
+                SetConnectionStatus(If(automatic, "Connection failed — test for details", "Connection failed — see details"),
+                                    Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
                 If Not automatic Then ShowResult("connection", probe)
                 Return
             End If
