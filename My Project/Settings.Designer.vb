@@ -56,7 +56,7 @@ Namespace My
         
         <Global.System.Configuration.ApplicationScopedSettingAttribute(),  _
          Global.System.Diagnostics.DebuggerNonUserCodeAttribute(),  _
-         Global.System.Configuration.DefaultSettingValueAttribute("Server=(localdb)\MSSQLLocalDB;Database=SPAPI_LocalTest;Integrated Security=True;")>  _
+         Global.System.Configuration.DefaultSettingValueAttribute("")>  _
         Public ReadOnly Property FTSSQL() As String
             Get
                 Return CType(Me("FTSSQL"),String)

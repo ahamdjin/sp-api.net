@@ -12,7 +12,7 @@
       <Value Profile="(Default)" />
     </Setting>
     <Setting Name="FTSSQL" Type="System.String" Scope="Application">
-      <Value Profile="(Default)">Server=(localdb)\MSSQLLocalDB;Database=SPAPI_LocalTest;Integrated Security=True;</Value>
+      <Value Profile="(Default)" />
     </Setting>
   </Settings>
 </SettingsFile>
