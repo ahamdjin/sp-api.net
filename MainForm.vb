@@ -4004,7 +4004,9 @@ Public Partial Class MainForm
         End If
         txtClientId.Text = originalClientId
         If CurrentOperation <> "catalog" Then Throw New InvalidOperationException("Catalogue must be the initial active workflow.")
-        If btnSaveDatabase.Enabled OrElse DatabaseVerified Then Throw New InvalidOperationException("SQL Server save must not be active until the connection has been tested.")
+        If btnSaveDatabase.Enabled OrElse btnBulkSaveDatabase.Enabled OrElse DatabaseVerified Then
+            Throw New InvalidOperationException("Single and bulk database saves must be disabled until a SQL connection has been verified.")
+        End If
         If txtSqlConnection.Text <> My.Settings.FTSSQL Then Throw New InvalidOperationException("The SQL connection must load from project settings.")
         If SelectedMarketplace().Id <> "ATVPDKIKX0DER" Then Throw New InvalidOperationException("USA must be the default marketplace.")
         If IsSandbox() Then Throw New InvalidOperationException("Production must be the default environment.")
@@ -4042,6 +4044,13 @@ Public Partial Class MainForm
             sandboxWriteBlocked = ex.Message.Contains("Sandbox database writes are disabled")
         End Try
         If Not sandboxWriteBlocked Then Throw New InvalidOperationException("Sandbox writes must be rejected before opening any SQL connection.")
+        sandboxWriteBlocked = False
+        Try
+            InventoryDatabase.SaveBulk("", New List(Of InventoryDatabase.ProductRecord) From {mapped}, True)
+        Catch ex As InvalidOperationException
+            sandboxWriteBlocked = ex.Message.Contains("Sandbox database writes are disabled")
+        End Try
+        If Not sandboxWriteBlocked Then Throw New InvalidOperationException("Bulk saves must refuse Sandbox before opening SQL.")
         If mapped.Asin <> "B07N4M94X4" OrElse mapped.Values("Weight") <> "1.25" OrElse
            mapped.Values("Height") <> "3" OrElse mapped.Values("ProductCatagory") <> "12345" OrElse
            mapped.Values("ImageURL") <> "https://example.com/image.jpg" OrElse mapped.Values.ContainsKey("Width") Then
