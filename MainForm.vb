@@ -4039,8 +4039,24 @@ Public Partial Class MainForm
             Throw New InvalidOperationException("Single and bulk database saves must be disabled until a SQL connection has been verified.")
         End If
         If txtSqlConnection.Text <> My.Settings.FTSSQL Then Throw New InvalidOperationException("The SQL connection must load from project settings.")
+        If txtClientId.Text <> My.Settings.ClientId OrElse txtClientSecret.Text <> My.Settings.ClientSecret OrElse
+           txtRefreshToken.Text <> My.Settings.RefreshToken Then
+            Throw New InvalidOperationException("Amazon credentials must be loaded from Project Properties/Settings on startup.")
+        End If
         If SelectedMarketplace().Id <> "ATVPDKIKX0DER" Then Throw New InvalidOperationException("USA must be the default marketplace.")
         If IsSandbox() Then Throw New InvalidOperationException("Production must be the default environment.")
+        SetConnectionStatus("Connected", Color.Green, Color.White)
+        If Not lblConnection.Text.StartsWith(Char.ConvertFromUtf32(&H25CF) & " Connected", StringComparison.Ordinal) OrElse
+           lblConnection.ForeColor <> Color.Green Then
+            Throw New InvalidOperationException("Amazon credentials status must show a green connection dot on success.")
+        End If
+        SetDatabaseStatus("Connected", Color.Green)
+        If Not lblDatabaseStatus.Text.StartsWith(Char.ConvertFromUtf32(&H25CF) & " Connected", StringComparison.Ordinal) OrElse
+           lblDatabaseStatus.ForeColor <> Color.Green Then
+            Throw New InvalidOperationException("SQL Server status must show a green connection dot on success.")
+        End If
+        InvalidateConnectionState()
+        DatabaseSettingsChanged(Nothing, EventArgs.Empty)
 
         Dim dbSample As New Dictionary(Of String, Object) From {
             {"asin", "B07N4M94X4"},
