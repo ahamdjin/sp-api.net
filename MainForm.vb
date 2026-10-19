@@ -3465,19 +3465,25 @@ Public Partial Class MainForm
 
     Private Sub UpdateDatabaseControls()
         btnTestDatabase.Enabled = Not DatabaseBusy AndAlso Not String.IsNullOrWhiteSpace(txtSqlConnection.Text)
-        btnSaveDatabase.Visible = CurrentViewOperation = "catalog" AndAlso LastResult IsNot Nothing AndAlso LastResult.Ok
-        btnSaveDatabase.Enabled = ConnectionVerified AndAlso Not RequestBusy AndAlso Not DatabaseBusy AndAlso DatabaseVerified AndAlso btnSaveDatabase.Visible AndAlso
-                                  SelectedCatalogItemForDatabase() IsNot Nothing
-        btnBulkSaveDatabase.Visible = btnSaveDatabase.Visible AndAlso ListValue(GetValue(AsDict(LastResult.Data), "items")).Count > 1
-        btnBulkSaveDatabase.Enabled = Not DatabaseBusy AndAlso Not RequestBusy AndAlso ConnectionVerified AndAlso DatabaseVerified AndAlso
-                                      btnBulkSaveDatabase.Visible AndAlso DatabaseEnvironmentAllowed()
-        If btnSaveDatabase.Visible Then
+        Dim showCatalog = CurrentViewOperation = "catalog" AndAlso LastResult IsNot Nothing AndAlso LastResult.Ok
+        Dim productCount = If(showCatalog,
+                              ListValue(GetValue(AsDict(LastResult.Data), "items")).Count, 0)
+        Dim canSave = ConnectionVerified AndAlso Not RequestBusy AndAlso Not DatabaseBusy AndAlso
+                      DatabaseVerified AndAlso DatabaseEnvironmentAllowed()
+
+        ' Use the logical catalogue state, not Control.Visible (which is False
+        ' when its parent tab is currently hidden).
+        btnSaveDatabase.Visible = showCatalog
+        btnSaveDatabase.Enabled = canSave AndAlso showCatalog AndAlso SelectedCatalogItemForDatabase() IsNot Nothing
+        btnBulkSaveDatabase.Visible = showCatalog AndAlso productCount > 1
+        btnBulkSaveDatabase.Enabled = canSave AndAlso showCatalog AndAlso productCount > 1
+        If showCatalog Then
             btnSaveDatabase.Text = If(DatabaseBusy, "Working...", "Save selected ASIN")
             appTooltips.SetToolTip(btnSaveDatabase, If(IsSandbox(), "Database saves are unavailable in Sandbox. Fetch a Production catalogue result to save.", "Review and save the selected ASIN. Details appear in the Database tab."))
         End If
-        If btnBulkSaveDatabase.Visible Then
+        If showCatalog AndAlso productCount > 1 Then
             btnBulkSaveDatabase.Text = If(DatabaseBusy, "Updating...", "Update All (" &
-                ListValue(GetValue(AsDict(LastResult.Data), "items")).Count.ToString(CultureInfo.InvariantCulture) & ")")
+                productCount.ToString(CultureInfo.InvariantCulture) & ")")
             appTooltips.SetToolTip(btnBulkSaveDatabase, "Insert or update every returned catalogue ASIN in SQL Server. Progress and results appear in the Database tab.")
         End If
     End Sub
@@ -4051,6 +4057,44 @@ Public Partial Class MainForm
             sandboxWriteBlocked = ex.Message.Contains("Sandbox database writes are disabled")
         End Try
         If Not sandboxWriteBlocked Then Throw New InvalidOperationException("Bulk saves must refuse Sandbox before opening SQL.")
+        ' Changing tabs must never hide the Update All action for a valid
+        ' multi-row Production catalogue result.
+        Dim oldResult = LastResult
+        Dim oldViewOperation = CurrentViewOperation
+        Dim oldOrigin = CatalogResultEnvironment
+        Dim oldVerified = DatabaseVerified
+        Dim oldAmazonVerified = ConnectionVerified
+        LastResult = New ApiResult With {
+            .Ok = True, .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"items", New Object() {
+                    New Dictionary(Of String, Object) From {{"asin", "B07N4M94X4"}},
+                    New Dictionary(Of String, Object) From {{"asin", "B07N4M94X5"}}
+                }}
+            }
+        }
+        CurrentViewOperation = "catalog"
+        CatalogResultEnvironment = "production"
+        cboEnvironment.SelectedIndex = 1
+        DatabaseVerified = True
+        ConnectionVerified = True
+        tabs.SelectedTab = databaseTab
+        UpdateDatabaseControls()
+        If Not btnBulkSaveDatabase.Enabled OrElse Not btnBulkSaveDatabase.Text.Contains("(2)") Then
+            Throw New InvalidOperationException("Update All must remain available for Production catalogue results even with Database tab selected.")
+        End If
+        cboEnvironment.SelectedIndex = 0
+        If btnBulkSaveDatabase.Enabled Then
+            Throw New InvalidOperationException("Update All must be disabled in Sandbox.")
+        End If
+        LastResult = oldResult
+        CurrentViewOperation = oldViewOperation
+        CatalogResultEnvironment = oldOrigin
+        DatabaseVerified = oldVerified
+        ConnectionVerified = oldAmazonVerified
+        tabs.SelectedTab = tabs.TabPages(0)
+        UpdateDatabaseControls()
+
         If mapped.Asin <> "B07N4M94X4" OrElse mapped.Values("Weight") <> "1.25" OrElse
            mapped.Values("Height") <> "3" OrElse mapped.Values("ProductCatagory") <> "12345" OrElse
            mapped.Values("ImageURL") <> "https://example.com/image.jpg" OrElse mapped.Values.ContainsKey("Width") Then
