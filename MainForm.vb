@@ -241,7 +241,7 @@ Public Partial Class MainForm
                                              connectionTimer.Stop()
                                              If Not RequestBusy AndAlso CredentialsReady() Then Await TestConnectionAsync(True)
                                          End Sub
-        AddHandler Shown, Sub(sender, e) InvalidateConnectionState()
+        AddHandler Shown, Async Sub(sender, e) Await ConnectOnStartupAsync()
         AddHandler FormClosed, Sub(sender, e)
                                    connectionTimer.Dispose()
                                    credentialErrors.Dispose()
@@ -254,6 +254,29 @@ Public Partial Class MainForm
         txtRefreshToken.Text = My.Settings.RefreshToken
         txtSqlConnection.Text = My.Settings.FTSSQL
     End Sub
+
+    ' Start with the private Project Settings defaults and verify both services.
+    ' These are real connection checks: a green indicator means the service
+    ' answered successfully, not merely that settings were supplied.
+    Private Async Function ConnectOnStartupAsync() As Task
+        InvalidateConnectionState()
+        connectionTimer.Stop()
+
+        ' Run sequentially to respect the existing RequestBusy/DatabaseBusy
+        ' safeguards; both checks still happen without clicks or popups.
+        If CredentialsReady() Then
+            Await TestConnectionAsync(True)
+        End If
+
+        If Not String.IsNullOrWhiteSpace(txtSqlConnection.Text) Then
+            Await TestDatabaseAsync(True)
+        Else
+            DatabaseVerified = False
+            SetDatabaseStatus("Enter FTSSQL", Color.DimGray)
+            txtDatabaseDetails.Text = "Set the FTSSQL connection string in Visual Studio Project Properties → Settings, or enter it in the application."
+            UpdateDatabaseControls()
+        End If
+    End Function
 
 
     #End Region
@@ -1431,7 +1454,8 @@ Public Partial Class MainForm
     End Sub
 
     Private Sub SetConnectionStatus(message As String, foreground As Color, background As Color)
-        lblConnection.Text = message
+        Dim dot = Char.ConvertFromUtf32(&H25CF) & " "
+        lblConnection.Text = If(message.StartsWith(dot, StringComparison.Ordinal), message, dot & message)
         lblConnection.ForeColor = foreground
         lblConnection.BackColor = background
     End Sub
@@ -1704,8 +1728,9 @@ Public Partial Class MainForm
         Try
             Dim probe = Await TestConnectionRequestAsync()
             If Not probe.Ok Then
-                SetConnectionStatus("Connection failed — see details", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
-                ShowResult("connection", probe)
+                SetConnectionStatus(If(automatic, "Connection failed — test for details", "Connection failed — see details"),
+                                    Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
+                If Not automatic Then ShowResult("connection", probe)
                 Return
             End If
 
@@ -1713,11 +1738,13 @@ Public Partial Class MainForm
             SetConnectionStatus(Char.ConvertFromUtf32(&H25CF) & " Connected", Color.FromArgb(22, 101, 52), Color.FromArgb(240, 253, 244))
             If Not automatic Then ShowResult("connection", probe)
         Catch ex As AppException
-            SetConnectionStatus("Connection failed — see details", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
-            ShowResult("connection", LocalFailure(ex))
+            SetConnectionStatus(If(automatic, "Connection failed — test for details", "Connection failed — see details"),
+                                Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
+            If Not automatic Then ShowResult("connection", LocalFailure(ex))
         Catch ex As Exception
-            SetConnectionStatus("Connection failed — see details", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
-            ShowResult("connection", LocalFailure(New AppException(ex.Message, 500, "CONNECTION_TEST_FAILED", ex.ToString())))
+            SetConnectionStatus(If(automatic, "Connection failed — test for details", "Connection failed — see details"),
+                                Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
+            If Not automatic Then ShowResult("connection", LocalFailure(New AppException(ex.Message, 500, "CONNECTION_TEST_FAILED", ex.ToString())))
         Finally
             ToggleBusy(False, "")
         End Try
@@ -3302,11 +3329,10 @@ Public Partial Class MainForm
         Return "Check the database connection and column types, then try again."
     End Function
 
-    Private Async Function TestDatabaseAsync() As Task
+    Private Async Function TestDatabaseAsync(Optional automatic As Boolean = False) As Task
         Dim connectionString = txtSqlConnection.Text
         If DatabaseBusy OrElse String.IsNullOrWhiteSpace(connectionString) Then Return
-        DatabaseBusy = True
-        btnTestDatabase.Enabled = False
+        SetDatabaseBusy(True)
         SetDatabaseStatus("Connecting...", Color.FromArgb(30, 64, 175))
         Try
             Dim status = Await Task.Run(Function() InventoryDatabase.TestConnection(connectionString))
@@ -3318,10 +3344,9 @@ Public Partial Class MainForm
             DatabaseVerified = False
             SetDatabaseStatus("Connection failed", Color.Firebrick)
             txtDatabaseDetails.Text = "Connection failed" & Environment.NewLine & Environment.NewLine & DatabaseErrorMessage(ex)
-            tabs.SelectedTab = databaseTab
+            If Not automatic Then tabs.SelectedTab = databaseTab
         Finally
-            DatabaseBusy = False
-            UpdateDatabaseControls()
+            SetDatabaseBusy(False)
         End Try
     End Function
 
@@ -4015,8 +4040,24 @@ Public Partial Class MainForm
             Throw New InvalidOperationException("Single and bulk database saves must be disabled until a SQL connection has been verified.")
         End If
         If txtSqlConnection.Text <> My.Settings.FTSSQL Then Throw New InvalidOperationException("The SQL connection must load from project settings.")
+        If txtClientId.Text <> My.Settings.ClientId OrElse txtClientSecret.Text <> My.Settings.ClientSecret OrElse
+           txtRefreshToken.Text <> My.Settings.RefreshToken Then
+            Throw New InvalidOperationException("Amazon credentials must be loaded from Project Properties/Settings on startup.")
+        End If
         If SelectedMarketplace().Id <> "ATVPDKIKX0DER" Then Throw New InvalidOperationException("USA must be the default marketplace.")
         If IsSandbox() Then Throw New InvalidOperationException("Production must be the default environment.")
+        SetConnectionStatus("Connected", Color.Green, Color.White)
+        If Not lblConnection.Text.StartsWith(Char.ConvertFromUtf32(&H25CF) & " Connected", StringComparison.Ordinal) OrElse
+           lblConnection.ForeColor <> Color.Green Then
+            Throw New InvalidOperationException("Amazon credentials status must show a green connection dot on success.")
+        End If
+        SetDatabaseStatus("Connected", Color.Green)
+        If Not lblDatabaseStatus.Text.StartsWith(Char.ConvertFromUtf32(&H25CF) & " Connected", StringComparison.Ordinal) OrElse
+           lblDatabaseStatus.ForeColor <> Color.Green Then
+            Throw New InvalidOperationException("SQL Server status must show a green connection dot on success.")
+        End If
+        InvalidateConnectionState()
+        DatabaseSettingsChanged(Nothing, EventArgs.Empty)
 
         Dim dbSample As New Dictionary(Of String, Object) From {
             {"asin", "B07N4M94X4"},
