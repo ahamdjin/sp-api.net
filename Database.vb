@@ -261,65 +261,135 @@ Friend NotInheritable Class InventoryDatabase
     #End Region
 
     #Region "Save: validate, write, verify, commit"
+
+    Friend NotInheritable Class BulkProgress
+        Public Property Completed As Integer
+        Public Property Total As Integer
+        Public Property Inserted As Integer
+        Public Property Updated As Integer
+        Public Property Failed As Integer
+        Public Property Skipped As Integer
+        Public Property Line As String = ""
+    End Class
+
+    Friend NotInheritable Class BulkSaveResult
+        Public Property Total As Integer
+        Public Property Inserted As Integer
+        Public Property Updated As Integer
+        Public Property Failed As Integer
+        Public Property Skipped As Integer
+        Public ReadOnly Lines As New List(Of String)()
+    End Class
+
     Friend Shared Function Save(connectionString As String, product As ProductRecord, Optional sandbox As Boolean = False) As String
-        If sandbox Then
-            Throw New InvalidOperationException("Sandbox database writes are disabled. Fetch a Production catalogue result before saving.")
-        End If
+        If sandbox Then Throw New InvalidOperationException("Sandbox database writes are disabled. Fetch a Production catalogue result before saving.")
         ValidateProduct(product)
         Using connection = OpenConnection(connectionString)
             Dim columns = ReadColumns(connection)
-            Using transaction = connection.BeginTransaction(IsolationLevel.ReadCommitted)
-                Try
-                    Dim current = ReadExisting(connection, product.Asin, transaction)
-                    Dim inserting = current Is Nothing
-                    Dim fieldsToSave As New List(Of String)()
-                    Dim values As New List(Of Object)()
-                    If inserting Then
-                        fieldsToSave.Add("Asin")
-                        values.Add(TypedValue("Asin", product.Asin, columns))
-                    End If
-                    For Each field In ProductFields
-                        Dim newValue As String = Nothing
-                        If product.Values.TryGetValue(field, newValue) Then
-                            fieldsToSave.Add(field)
-                            values.Add(TypedValue(field, newValue, columns))
-                        End If
-                    Next
-                    fieldsToSave.Add("LastUpdated")
-                    values.Add(TypedValue("LastUpdated", DateTime.Now, columns))
+            Dim operation As String = ""
+            Return SaveWithConnection(connection, columns, product, operation)
+        End Using
+    End Function
 
-                    Dim sql = BuildSaveSql(fieldsToSave, inserting)
-                    If Not inserting Then
-                        values.Add(TypedValue("Asin", product.Asin, columns))
-                    End If
-                    Using command As New SqlCommand(sql, connection, transaction)
-                        For index As Integer = 0 To values.Count - 1
-                            command.Parameters.AddWithValue("@p" & index.ToString(CultureInfo.InvariantCulture), values(index))
-                        Next
-                        Dim affected = command.ExecuteNonQuery()
-                        If affected <> 1 Then Throw New InvalidOperationException("The expected update count was 1, but SQL Server reported " & affected.ToString(CultureInfo.InvariantCulture) & ".")
-                    End Using
-
-                    Dim saved = ReadExisting(connection, product.Asin, transaction)
-                    VerifySavedValues(saved, fieldsToSave, values, columns)
-                    transaction.Commit()
-
-                    Dim result As New System.Text.StringBuilder()
-                    result.AppendLine(If(inserting, "Inserted ", "Updated ") & product.Asin & " in InventoryDimensions.")
-                    result.AppendLine("Saved values verified:")
-                    For Each field In fieldsToSave
-                        result.AppendLine(field & ": " & TextValue(saved(field)))
-                    Next
-                    Return result.ToString()
-                Catch
+    ' One connection/schema validation for the batch; each ASIN is an independent verified
+    ' transaction so an invalid product does not roll back the other successful products.
+    Friend Shared Function SaveBulk(connectionString As String, products As IList(Of ProductRecord),
+                                   Optional sandbox As Boolean = False,
+                                   Optional progress As IProgress(Of BulkProgress) = Nothing) As BulkSaveResult
+        If sandbox Then Throw New InvalidOperationException("Sandbox database writes are disabled. Fetch a Production catalogue result before saving.")
+        If products Is Nothing OrElse products.Count = 0 Then Throw New InvalidOperationException("No catalogue products were returned for bulk saving.")
+        Dim summary As New BulkSaveResult With {.Total = products.Count}
+        Dim seen As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        Using connection = OpenConnection(connectionString)
+            Dim columns = ReadColumns(connection)
+            For Each product In products
+                Dim asin = If(product Is Nothing, "", If(product.Asin, "").Trim().ToUpperInvariant())
+                Dim detail As String
+                If asin <> "" AndAlso Not seen.Add(asin) Then
+                    summary.Skipped += 1
+                    detail = asin & " | Skipped: duplicate ASIN in these catalogue results"
+                Else
                     Try
-                        transaction.Rollback()
-                    Catch
-                        ' A failed connection may already have rolled back the transaction.
+                        ValidateProduct(product)
+                        Dim operation As String = ""
+                        SaveWithConnection(connection, columns, product, operation)
+                        If operation = "Inserted" Then
+                            summary.Inserted += 1
+                        Else
+                            summary.Updated += 1
+                        End If
+                        detail = asin & " | " & operation & " and verified"
+                    Catch ex As Exception
+                        summary.Failed += 1
+                        detail = If(asin = "", "(missing ASIN)", asin) & " | Failed: " & ex.Message
                     End Try
-                    Throw
+                End If
+                summary.Lines.Add(detail)
+                If progress IsNot Nothing Then
+                    progress.Report(New BulkProgress With {
+                        .Completed = summary.Lines.Count,
+                        .Total = summary.Total,
+                        .Inserted = summary.Inserted, .Updated = summary.Updated,
+                        .Failed = summary.Failed, .Skipped = summary.Skipped, .Line = detail
+                    })
+                End If
+            Next
+        End Using
+        Return summary
+    End Function
+
+    Private Shared Function SaveWithConnection(connection As SqlConnection, columns As Dictionary(Of String, Type),
+                                               product As ProductRecord, ByRef operation As String) As String
+        ValidateProduct(product)
+        Using transaction = connection.BeginTransaction(IsolationLevel.ReadCommitted)
+            Try
+                Dim current = ReadExisting(connection, product.Asin, transaction)
+                Dim inserting = current Is Nothing
+                Dim fieldsToSave As New List(Of String)()
+                Dim values As New List(Of Object)()
+                If inserting Then
+                    fieldsToSave.Add("Asin")
+                    values.Add(TypedValue("Asin", product.Asin, columns))
+                End If
+                For Each field In ProductFields
+                    Dim newValue As String = Nothing
+                    If product.Values.TryGetValue(field, newValue) Then
+                        fieldsToSave.Add(field)
+                        values.Add(TypedValue(field, newValue, columns))
+                    End If
+                Next
+                fieldsToSave.Add("LastUpdated")
+                values.Add(TypedValue("LastUpdated", DateTime.Now, columns))
+
+                Dim sql = BuildSaveSql(fieldsToSave, inserting)
+                If Not inserting Then values.Add(TypedValue("Asin", product.Asin, columns))
+                Using command As New SqlCommand(sql, connection, transaction)
+                    For index As Integer = 0 To values.Count - 1
+                        command.Parameters.AddWithValue("@p" & index.ToString(CultureInfo.InvariantCulture), values(index))
+                    Next
+                    Dim affected = command.ExecuteNonQuery()
+                    If affected <> 1 Then Throw New InvalidOperationException("Expected to save one row, but SQL Server reported " & affected.ToString(CultureInfo.InvariantCulture) & ".")
+                End Using
+                Dim saved = ReadExisting(connection, product.Asin, transaction)
+                VerifySavedValues(saved, fieldsToSave, values, columns)
+                transaction.Commit()
+
+                operation = If(inserting, "Inserted", "Updated")
+                Dim result As New System.Text.StringBuilder()
+                result.AppendLine(operation & " " & product.Asin & " in InventoryDimensions.")
+                result.AppendLine("Saved values verified:")
+                For Each field In fieldsToSave
+                    result.AppendLine(field & ": " & TextValue(saved(field)))
+                Next
+                Return result.ToString()
+            Catch
+                Try
+                    transaction.Rollback()
+                Catch
+                    ' SQL Server may already have rolled back a failed transaction.
                 End Try
-            End Using
+                Throw
+            End Try
         End Using
     End Function
 
