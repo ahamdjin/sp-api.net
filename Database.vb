@@ -649,6 +649,24 @@ Friend NotInheritable Class InventoryDatabase
                 End If
             End Using
 
+            ' If the first appearance of an ASIN fails, a later valid appearance
+            ' must still be allowed to save, not skipped as a duplicate.
+            Dim recoverBad As New ProductRecord With {.Asin = "B07N4M94X7"}
+            recoverBad.Values("ImageURL") = New String("Y"c, 1050)
+            Dim recoverGood As New ProductRecord With {.Asin = "B07N4M94X7"}
+            recoverGood.Values("Weight") = "8"
+            Dim retryResult = SaveBulk(connectionString, New List(Of ProductRecord) From {recoverBad, recoverGood})
+            If retryResult.Failed <> 1 OrElse retryResult.Inserted <> 1 OrElse retryResult.Skipped <> 0 Then
+                Throw New InvalidOperationException("A failed first ASIN must not suppress a later valid row.")
+            End If
+            Using connection As New SqlConnection(connectionString)
+                connection.Open()
+                Dim recovered = ReadExisting(connection, "B07N4M94X7")
+                If recovered Is Nothing OrElse Convert.ToDecimal(recovered("Weight"), CultureInfo.InvariantCulture) <> 8D Then
+                    Throw New InvalidOperationException("A valid duplicate did not recover after the first row failed.")
+                End If
+            End Using
+
             ' Real deployments might store dimensions as numbers and category IDs as integers.
             Using connection As New SqlConnection(connectionString)
                 connection.Open()
