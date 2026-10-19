@@ -191,6 +191,9 @@ Public Partial Class MainForm
     Private ReadOnly btnTestDatabase As New Button()
     Private ReadOnly btnSaveDatabase As New Button()
     Private ReadOnly lblDatabaseStatus As New Label()
+    Private ReadOnly databaseTab As New TabPage("Database")
+    Private ReadOnly txtDatabaseDetails As New TextBox()
+    Private DatabaseBusy As Boolean
     Private DatabaseVerified As Boolean
     Private CatalogResultEnvironment As String = ""
     Private ReadOnly tabs As New TabControl()
@@ -237,6 +240,7 @@ Public Partial Class MainForm
         If btnSaveDatabase.Enabled OrElse DatabaseVerified Then Throw New InvalidOperationException("SQL Server save must not be active until the connection has been tested.")
         If txtSqlConnection.Text <> My.Settings.FTSSQL Then Throw New InvalidOperationException("The SQL connection must load from project settings.")
         If SelectedMarketplace().Id <> "ATVPDKIKX0DER" Then Throw New InvalidOperationException("USA must be the default marketplace.")
+        If IsSandbox() Then Throw New InvalidOperationException("Production must be the default environment.")
 
         Dim dbSample As New Dictionary(Of String, Object) From {
             {"asin", "B07N4M94X4"},
@@ -264,6 +268,13 @@ Public Partial Class MainForm
             }}
         }
         Dim mapped = InventoryDatabase.MapCatalogItem(dbSample)
+        Dim sandboxWriteBlocked As Boolean = False
+        Try
+            InventoryDatabase.Save("", mapped, True)
+        Catch ex As InvalidOperationException
+            sandboxWriteBlocked = ex.Message.Contains("Sandbox database writes are disabled")
+        End Try
+        If Not sandboxWriteBlocked Then Throw New InvalidOperationException("Sandbox writes must be rejected before opening any SQL connection.")
         If mapped.Asin <> "B07N4M94X4" OrElse mapped.Values("Weight") <> "1.25" OrElse
            mapped.Values("Height") <> "3" OrElse mapped.Values("ProductCatagory") <> "12345" OrElse
            mapped.Values("ImageURL") <> "https://example.com/image.jpg" OrElse mapped.Values.ContainsKey("Width") Then
@@ -276,6 +287,12 @@ Public Partial Class MainForm
         If Marketplaces.Select(Function(m) m.Id).Distinct(StringComparer.Ordinal).Count() <> Marketplaces.Count Then Throw New InvalidOperationException("Marketplace IDs must be unique.")
         If Operations.Select(Function(op) op.Id).Distinct(StringComparer.Ordinal).Count() <> Operations.Count Then Throw New InvalidOperationException("Operation IDs must be unique.")
 
+        cboEnvironment.SelectedIndex = 0
+        CatalogResultEnvironment = "sandbox"
+        If DatabaseEnvironmentAllowed() Then Throw New InvalidOperationException("Sandbox results must never enable database writes.")
+        cboEnvironment.SelectedIndex = 1
+        If DatabaseEnvironmentAllowed() Then Throw New InvalidOperationException("Switching to Production must not permit saving an old Sandbox result.")
+        CatalogResultEnvironment = ""
         cboEnvironment.SelectedIndex = 0
         For Each operation In Operations
             SelectOperation(operation.Id)
@@ -745,7 +762,7 @@ Public Partial Class MainForm
 
         cboEnvironment.DropDownStyle = ComboBoxStyle.DropDownList
         cboEnvironment.Items.AddRange(New Object() {"Sandbox", "Production"})
-        cboEnvironment.SelectedIndex = 0
+        cboEnvironment.SelectedIndex = 1
         AddCredential(cGrid, 0, 1, "Environment", cboEnvironment, False)
 
         cboMarketplace.DropDownStyle = ComboBoxStyle.DropDownList
@@ -964,7 +981,18 @@ Public Partial Class MainForm
         appTooltips.SetToolTip(cboEnvironment, "Sandbox uses Amazon test fixtures; Production uses the live seller account")
         appTooltips.SetToolTip(txtSqlConnection, "Loaded from Project Properties > Settings > FTSSQL. Changes here apply to this session only.")
         appTooltips.SetToolTip(btnTestDatabase, "Test SQL Server read access to InventoryDimensions without changing records.")
-        appTooltips.SetToolTip(btnSaveDatabase, "Preview a selected catalogue ASIN before an explicit database update. Production only.")
+        appTooltips.SetToolTip(btnSaveDatabase, "Review and save the selected ASIN. Details appear in the Database tab.")
+        databaseTab.Padding = New Padding(14)
+        txtDatabaseDetails.Dock = DockStyle.Fill
+        txtDatabaseDetails.Multiline = True
+        txtDatabaseDetails.ReadOnly = True
+        txtDatabaseDetails.ScrollBars = ScrollBars.Vertical
+        txtDatabaseDetails.BackColor = Color.White
+        txtDatabaseDetails.BorderStyle = BorderStyle.None
+        txtDatabaseDetails.Font = New Font("Segoe UI", 10.0F)
+        txtDatabaseDetails.Text = "Database activity will appear here. Test the connection, then select a product and choose Save to database."
+        databaseTab.Controls.Add(txtDatabaseDetails)
+        tabs.TabPages.Add(databaseTab)
         AddHandler Me.KeyDown, AddressOf MainFormKeyDown
     End Sub
 
@@ -1185,7 +1213,7 @@ Public Partial Class MainForm
         lblDatabaseStatus.ForeColor = Color.DimGray
         viewActions.Controls.Add(lblDatabaseStatus)
 
-        btnSaveDatabase.Text = "Preview / Save selected ASIN"
+        btnSaveDatabase.Text = "Save to database"
         btnSaveDatabase.AutoSize = True
         btnSaveDatabase.Visible = False
         btnSaveDatabase.Enabled = False
@@ -3652,76 +3680,100 @@ Public Partial Class MainForm
     #Region "12 - SQL Server inventory connection and saving"
     Private Sub DatabaseSettingsChanged(sender As Object, e As EventArgs)
         DatabaseVerified = False
-        lblDatabaseStatus.Text = "SQL Server: connection not tested"
+        SetDatabaseStatus("Not connected", Color.DimGray)
         UpdateDatabaseControls()
+    End Sub
+
+    Private Sub SetDatabaseStatus(message As String, color As Color)
+        lblDatabaseStatus.Text = Char.ConvertFromUtf32(&H25CF) & " " & message
+        lblDatabaseStatus.ForeColor = color
     End Sub
 
     Private Async Function TestDatabaseAsync() As Task
         Dim connectionString = txtSqlConnection.Text
-        If String.IsNullOrWhiteSpace(connectionString) Then Return
+        If DatabaseBusy OrElse String.IsNullOrWhiteSpace(connectionString) Then Return
+        DatabaseBusy = True
         btnTestDatabase.Enabled = False
-        lblDatabaseStatus.Text = "Testing InventoryDimensions..."
+        SetDatabaseStatus("Connecting...", Color.FromArgb(30, 64, 175))
         Try
             Dim status = Await Task.Run(Function() InventoryDatabase.TestConnection(connectionString))
             If Not String.Equals(connectionString, txtSqlConnection.Text, StringComparison.Ordinal) Then Return
             DatabaseVerified = True
-            lblDatabaseStatus.Text = "SQL Server: connected"
-            MessageBox.Show(status, "SQL Server connection", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            SetDatabaseStatus("Connected", Color.FromArgb(22, 101, 52))
+            txtDatabaseDetails.Text = "Connected" & Environment.NewLine & Environment.NewLine & status
         Catch ex As Exception
             DatabaseVerified = False
-            lblDatabaseStatus.Text = "SQL Server: connection failed"
-            MessageBox.Show(ex.Message, "SQL Server connection failed", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            SetDatabaseStatus("Connection failed", Color.Firebrick)
+            txtDatabaseDetails.Text = "Connection failed" & Environment.NewLine & Environment.NewLine & ex.Message
+            tabs.SelectedTab = databaseTab
         Finally
+            DatabaseBusy = False
             UpdateDatabaseControls()
         End Try
     End Function
 
     Private Function SelectedCatalogItemForDatabase() As Dictionary(Of String, Object)
         If CurrentViewOperation <> "catalog" OrElse LastResult Is Nothing OrElse Not LastResult.Ok OrElse
-           CatalogResultEnvironment <> "production" OrElse IsSandbox() Then Return Nothing
+           CatalogResultEnvironment <> EnvironmentName() OrElse Not DatabaseEnvironmentAllowed() Then Return Nothing
         If viewGrid.SelectedRows.Count > 0 Then Return AsDict(viewGrid.SelectedRows(0).Tag)
         Dim items = ListValue(GetValue(AsDict(LastResult.Data), "items"))
         If items.Count = 1 Then Return AsDict(items(0))
         Return Nothing
     End Function
 
+    Private Function DatabaseEnvironmentAllowed() As Boolean
+        Return Not IsSandbox() AndAlso CatalogResultEnvironment = "production"
+    End Function
+
     Private Sub UpdateDatabaseControls()
-        btnTestDatabase.Enabled = Not String.IsNullOrWhiteSpace(txtSqlConnection.Text)
+        btnTestDatabase.Enabled = Not DatabaseBusy AndAlso Not String.IsNullOrWhiteSpace(txtSqlConnection.Text)
         btnSaveDatabase.Visible = CurrentViewOperation = "catalog" AndAlso LastResult IsNot Nothing AndAlso LastResult.Ok
-        btnSaveDatabase.Enabled = DatabaseVerified AndAlso btnSaveDatabase.Visible AndAlso
+        btnSaveDatabase.Enabled = Not DatabaseBusy AndAlso DatabaseVerified AndAlso btnSaveDatabase.Visible AndAlso
                                   SelectedCatalogItemForDatabase() IsNot Nothing
         If btnSaveDatabase.Visible Then
-            btnSaveDatabase.Text = If(IsSandbox(), "Save disabled in Sandbox", "Preview / Save selected ASIN")
+            btnSaveDatabase.Text = If(DatabaseBusy, "Working...", "Save to database")
+            appTooltips.SetToolTip(btnSaveDatabase, If(IsSandbox(), "Database saves are unavailable in Sandbox. Fetch a Production catalogue result to save.", "Review and save the selected ASIN. Details appear in the Database tab."))
         End If
     End Sub
 
     Private Async Function PreviewAndSaveDatabaseAsync() As Task
-        If Not DatabaseVerified OrElse IsSandbox() Then
-            MessageBox.Show("Test a SQL Server connection first. Only Production catalogue results can be saved.", "Database save", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        If DatabaseBusy Then Return
+        If Not DatabaseVerified OrElse Not DatabaseEnvironmentAllowed() Then
+            txtDatabaseDetails.Text = "Test the database connection first. Only Production catalogue results can be saved; Sandbox database writes are disabled."
+            tabs.SelectedTab = databaseTab
             Return
         End If
         Dim selectedItem = SelectedCatalogItemForDatabase()
         If selectedItem Is Nothing Then Return
         Dim product = InventoryDatabase.MapCatalogItem(selectedItem)
         Dim connectionString = txtSqlConnection.Text
-        btnSaveDatabase.Enabled = False
+        Dim sandboxSave = IsSandbox()
+        DatabaseBusy = True
+        UpdateDatabaseControls()
         Try
             Dim preview = Await Task.Run(Function() InventoryDatabase.Preview(connectionString, product))
-            If Not DatabaseVerified OrElse IsSandbox() OrElse SelectedCatalogItemForDatabase() Is Nothing OrElse
+            If Not DatabaseVerified OrElse Not DatabaseEnvironmentAllowed() OrElse SelectedCatalogItemForDatabase() Is Nothing OrElse
                Not String.Equals(connectionString, txtSqlConnection.Text, StringComparison.Ordinal) Then Return
-            Dim answer = MessageBox.Show(preview & Environment.NewLine &
-                                         "Back up the SQL Server database before its first write." & Environment.NewLine &
-                                         "Save this ASIN now?",
-                                         "Review InventoryDimensions change", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2)
+            Dim target As New System.Data.SqlClient.SqlConnectionStringBuilder(connectionString)
+            txtDatabaseDetails.Text = "Review database change" & Environment.NewLine &
+                "Server: " & target.DataSource & Environment.NewLine & "Database: " & target.InitialCatalog & Environment.NewLine &
+                "Amazon environment: " & CatalogResultEnvironment & Environment.NewLine & Environment.NewLine & preview
+            tabs.SelectedTab = databaseTab
+            Dim answer = MessageBox.Show("Save ASIN " & product.Asin & " to " & target.InitialCatalog & "?" & Environment.NewLine &
+                                         "The proposed values are shown in the Database tab.",
+                                         "Save to database", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2)
             If answer <> DialogResult.Yes Then Return
-            If Not DatabaseVerified OrElse IsSandbox() OrElse SelectedCatalogItemForDatabase() Is Nothing OrElse
+            If Not DatabaseVerified OrElse Not DatabaseEnvironmentAllowed() OrElse SelectedCatalogItemForDatabase() Is Nothing OrElse
                Not String.Equals(connectionString, txtSqlConnection.Text, StringComparison.Ordinal) Then Return
-            Dim outcome = Await Task.Run(Function() InventoryDatabase.Save(connectionString, product))
-            lblDatabaseStatus.Text = "SQL Server: saved " & product.Asin
-            MessageBox.Show(outcome, "InventoryDimensions updated", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Dim outcome = Await Task.Run(Function() InventoryDatabase.Save(connectionString, product, sandboxSave))
+            SetDatabaseStatus("Connected", Color.FromArgb(22, 101, 52))
+            txtDatabaseDetails.Text = "Saved successfully" & Environment.NewLine & Environment.NewLine & outcome &
+                Environment.NewLine & Environment.NewLine & "Database: " & target.InitialCatalog & Environment.NewLine & "Server: " & target.DataSource
         Catch ex As Exception
-            MessageBox.Show("The SQL Server save could not be confirmed. " & ex.Message, "Database save failed", MessageBoxButtons.OK, MessageBoxIcon.Error)
+            txtDatabaseDetails.Text = "Save could not be confirmed" & Environment.NewLine & Environment.NewLine & ex.Message
+            tabs.SelectedTab = databaseTab
         Finally
+            DatabaseBusy = False
             UpdateDatabaseControls()
         End Try
     End Function

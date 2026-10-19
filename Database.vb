@@ -257,7 +257,10 @@ Friend NotInheritable Class InventoryDatabase
         End Using
     End Function
 
-    Friend Shared Function Save(connectionString As String, product As ProductRecord) As String
+    Friend Shared Function Save(connectionString As String, product As ProductRecord, Optional sandbox As Boolean = False) As String
+        If sandbox Then
+            Throw New InvalidOperationException("Sandbox database writes are disabled. Fetch a Production catalogue result before saving.")
+        End If
         ValidateProduct(product)
         Using connection = OpenConnection(connectionString)
             Dim columns = ReadColumns(connection)

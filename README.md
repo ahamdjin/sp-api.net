@@ -19,7 +19,7 @@ The .sln and .vbproj files are Visual Studio scaffolding, not extra code files.
 
 ## Everyday use
 
-Project Properties > Settings includes `FTSSQL`, `ClientId`, `ClientSecret`, and `RefreshToken`. The app loads these defaults at startup. Catalogue item and United States are the initial operation and marketplace; Sandbox remains the safe initial environment. Amazon credential defaults are blank. Settings are plain text: keep real credentials local and never commit them to GitHub. Editing fields in the running app changes only that session. Deploy `SP-API.NET.exe.config` alongside the executable to retain configured settings.
+Project Properties > Settings includes `FTSSQL`, `ClientId`, `ClientSecret`, and `RefreshToken`. The app loads these defaults at startup. Catalogue item, United States, and Production are the startup defaults. Amazon credential defaults are blank. Settings are plain text: keep real credentials local and never commit them to GitHub. Editing fields in the running app changes only that session. Deploy `SP-API.NET.exe.config` alongside the executable to retain configured settings.
 
 Enter Client ID, Client Secret and Refresh Token; select Sandbox or Production and marketplace; click **Test connection**. Choose an operation and run it. See the readable **View** tab by default. Summary and Raw response remain available if needed. Sandbox examples are populated only by explicitly clicking **Load Sandbox example**. Live write operations require confirmation.
 
@@ -38,7 +38,7 @@ Expected columns (spelling maintained from the original function): `Asin`, `Weig
 
 **Back up the SQL Server database before the first write.** A valid connection string and sufficient permissions are still necessary. Category identifiers from Amazon Catalog Items 2022-04-01 may not equal the older SDK's ProductCategoryId, and the units must match Joel's intended stored units. Validate with real, noncritical data before deployment.
 
-Sandbox catalogue data cannot be saved, even after switching to Production. The older unrelated **Convert Amazon_US** and **SKU / FC Bulk Update** utilities remain disconnected.
+Sandbox database writes are disabled for all databases, including the local test database. Saving requires a Production catalogue result and Production selected; switching environments does not make an old Sandbox result eligible. Connection checks are read-only and remain available in either environment. The Database tab shows connection details, the save preview, and the verified save result, with one save confirmation and no success popups. The older unrelated **Convert Amazon_US** and **SKU / FC Bulk Update** utilities remain disconnected.
 
 ## Verification
 
