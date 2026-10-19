@@ -1,0 +1,19 @@
+# Visual Studio / MSBuild generated files
+.vs/
+bin/
+obj/
+[Bb]uild/
+[Dd]ebug/
+[Rr]elease/
+
+# User-specific IDE settings
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.vspscc
+*.vssscc
+
+# Local test outputs and logs
+*-smoke-error.txt
+*.log
