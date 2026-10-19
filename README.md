@@ -9,11 +9,31 @@ VB.NET Windows Forms Amazon SP-API workbench for Visual Studio 2019 and .NET Fra
 
 No Node.js, npm, web server, or third-party NuGet packages.
 
-## Three source files
+## Source files and where to make changes
 
 - `MainForm.vb` — desktop UI/UX and readable **View** for all operations, including product details, record tables, fees, inventory, orders, documents, report/feed/inbound results; plus Summary and Raw response tabs.
 - `ApiRequests.vb` — login/LWA, SP-API HTTP requests, Sandbox/Production behavior, validations, pagination, retries, reports/feeds/inbound and documents.
 - `Database.vb` — isolated SQL Server catalogue-to-`InventoryDimensions` mapping, read-only connection checks, previews, and confirmed insert/update.
+- `ProductionApi.vb` — live endpoint and Production-only request rules.
+- `SandboxApi.vb` — test endpoint and Sandbox-only request rules. Shared requests are not duplicated.
+
+In Visual Studio, press **Ctrl+M, Ctrl+O** to collapse code sections. Expand the named section you need. `MainForm.vb` keeps offline tests at the bottom, away from startup and ordinary editing.
+
+| What you want to change | Where to look |
+|---|---|
+| Credentials or SQL connection | Project Properties > Settings |
+| Countries or operation names | MainForm.vb, section 01 |
+| Default request values | MainForm.vb, section 04 |
+| Layout, buttons, images | MainForm.vb, section 05 |
+| Fields for a particular request | MainForm.vb, section 06, BuildOperationFields |
+| Product/result presentation | MainForm.vb, sections 09–11 |
+| Database connection and save experience | MainForm.vb, section 12 |
+| Amazon operation URL/body/parameters | ApiRequests.vb, sections 02–06 |
+| Production or Sandbox rules | ProductionApi.vb or SandboxApi.vb |
+| Which Amazon values go into SQL columns | Database.vb, MapCatalogItem |
+| Save transaction and verification | Database.vb, section 03 |
+
+Database changes follow `MapCatalogItem` → `Preview` → `Save` → read-back verification. When adding a stored field, update the supported column lists, mapping, expected schema, and tests together. Keep SQL parameterized and keep verification inside the transaction. Weight/dimensions retain Amazon's supplied units; changing stored units requires an explicit conversion.
 
 The .sln and .vbproj files are Visual Studio scaffolding, not extra code files.
 
@@ -22,6 +42,8 @@ The .sln and .vbproj files are Visual Studio scaffolding, not extra code files.
 Project Properties > Settings includes `FTSSQL`, `ClientId`, `ClientSecret`, and `RefreshToken`. The app loads these defaults at startup. Catalogue item, United States, and Production are the startup defaults. Amazon credential defaults are blank. Settings are plain text: keep real credentials local and never commit them to GitHub. Editing fields in the running app changes only that session. Deploy `SP-API.NET.exe.config` alongside the executable to retain configured settings.
 
 Enter Client ID, Client Secret and Refresh Token; select Sandbox or Production and marketplace; click **Test connection**. Choose an operation and run it. See the readable **View** tab by default. Summary and Raw response remain available if needed. Sandbox examples are populated only by explicitly clicking **Load Sandbox example**. Live write operations require confirmation.
+
+Complete credentials connect automatically after typing stops and when the app opens with saved settings. A green Connected status unlocks requests. Empty or changed credentials immediately lock requests and database saves until verification succeeds again. Test connection remains available for a manual retry. Unavailable legacy utilities are hidden from navigation. Database activity appears in the Database tab without connection-success popups.
 
 ## SQL Server inventory updates
 
@@ -42,7 +64,7 @@ Sandbox database writes are disabled for all databases, including the local test
 
 ## Verification
 
-GitHub Actions validates the three-file layout, builds Debug and Release on Windows, and runs the built-in offline WinForms self-test (including API request validation and Sandbox/Production endpoint checks).
+GitHub Actions validates the five application source files, builds Debug and Release on Windows, and runs the built-in offline WinForms self-test (including API request validation and Sandbox/Production endpoint checks).
 
 It also launches an isolated SQL Server LocalDB instance, creates a **temporary test database**, and tests actual `InventoryDimensions` inserts, updates, read-back, partial-field preservation, apostrophes in string data, transaction rollback on SQL errors, invalid ASIN rejection, numeric column types, and missing-column detection. The temporary database is deleted at the end of the test. No access to Joel's server is used.
 

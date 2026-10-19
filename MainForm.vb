@@ -198,6 +198,10 @@ Public Partial Class MainForm
     Private CatalogResultEnvironment As String = ""
     Private ReadOnly tabs As New TabControl()
     Private ReadOnly appTooltips As New ToolTip()
+    Private ReadOnly connectionTimer As New Timer With {.Interval = 900}
+    Private ReadOnly credentialErrors As New ErrorProvider()
+    Private ConnectionVerified As Boolean
+    Private RequestBusy As Boolean
 
     Private CurrentOperation As String = "catalog"
     Private LastResult As ApiResult
@@ -214,9 +218,9 @@ Public Partial Class MainForm
 
     #End Region
 
-    #Region "03 - Startup and offline checks"
+    #Region "03 - Startup"
     Public Sub New()
-        Text = "Amazon SP-API Workbench - VB.NET"
+        Text = "Amazon SP-API Workbench"
         StartPosition = FormStartPosition.CenterScreen
         MinimumSize = New Size(1120, 720)
         Size = New Size(1450, 900)
@@ -226,471 +230,30 @@ Public Partial Class MainForm
         KeyPreview = True
         InitializeFieldValues()
         BuildUi()
+        LoadConnectionDefaults()
+        BuildOperationTree()
+        SelectOperation("catalog")
+        NavigateToOperation("catalog")
+        credentialErrors.ContainerControl = Me
+        credentialErrors.BlinkStyle = ErrorBlinkStyle.NeverBlink
+        AddHandler connectionTimer.Tick, Async Sub(sender, e)
+                                             connectionTimer.Stop()
+                                             If Not RequestBusy AndAlso CredentialsReady() Then Await TestConnectionAsync(True)
+                                         End Sub
+        AddHandler Shown, Sub(sender, e) InvalidateConnectionState()
+        AddHandler FormClosed, Sub(sender, e)
+                                   connectionTimer.Dispose()
+                                   credentialErrors.Dispose()
+                               End Sub
+    End Sub
+
+    Private Sub LoadConnectionDefaults()
         txtClientId.Text = My.Settings.ClientId
         txtClientSecret.Text = My.Settings.ClientSecret
         txtRefreshToken.Text = My.Settings.RefreshToken
         txtSqlConnection.Text = My.Settings.FTSSQL
-        BuildOperationTree()
-        SelectOperation("catalog")
-        NavigateToOperation("catalog")
     End Sub
 
-    Public Sub RunCiSelfTest()
-        If CurrentOperation <> "catalog" Then Throw New InvalidOperationException("Catalogue must be the initial active workflow.")
-        If btnSaveDatabase.Enabled OrElse DatabaseVerified Then Throw New InvalidOperationException("SQL Server save must not be active until the connection has been tested.")
-        If txtSqlConnection.Text <> My.Settings.FTSSQL Then Throw New InvalidOperationException("The SQL connection must load from project settings.")
-        If SelectedMarketplace().Id <> "ATVPDKIKX0DER" Then Throw New InvalidOperationException("USA must be the default marketplace.")
-        If IsSandbox() Then Throw New InvalidOperationException("Production must be the default environment.")
-
-        Dim dbSample As New Dictionary(Of String, Object) From {
-            {"asin", "B07N4M94X4"},
-            {"dimensions", New Object() {
-                New Dictionary(Of String, Object) From {
-                    {"item", New Dictionary(Of String, Object) From {
-                        {"weight", New Dictionary(Of String, Object) From {{"value", 1.25D}, {"unit", "pounds"}}},
-                        {"height", New Dictionary(Of String, Object) From {{"value", 3D}, {"unit", "inches"}}}
-                    }}
-                }
-            }},
-            {"images", New Object() {
-                New Dictionary(Of String, Object) From {
-                    {"images", New Object() {
-                        New Dictionary(Of String, Object) From {{"variant", "MAIN"}, {"link", "https://example.com/image.jpg"}}
-                    }}
-                }
-            }},
-            {"salesRanks", New Object() {
-                New Dictionary(Of String, Object) From {
-                    {"classificationRanks", New Object() {
-                        New Dictionary(Of String, Object) From {{"classificationId", "12345"}}
-                    }}
-                }
-            }}
-        }
-        Dim mapped = InventoryDatabase.MapCatalogItem(dbSample)
-        Dim sandboxWriteBlocked As Boolean = False
-        Try
-            InventoryDatabase.Save("", mapped, True)
-        Catch ex As InvalidOperationException
-            sandboxWriteBlocked = ex.Message.Contains("Sandbox database writes are disabled")
-        End Try
-        If Not sandboxWriteBlocked Then Throw New InvalidOperationException("Sandbox writes must be rejected before opening any SQL connection.")
-        If mapped.Asin <> "B07N4M94X4" OrElse mapped.Values("Weight") <> "1.25" OrElse
-           mapped.Values("Height") <> "3" OrElse mapped.Values("ProductCatagory") <> "12345" OrElse
-           mapped.Values("ImageURL") <> "https://example.com/image.jpg" OrElse mapped.Values.ContainsKey("Width") Then
-            Throw New InvalidOperationException("Catalogue-to-database mapping failed the offline test.")
-        End If
-        If operationTree.SelectedNode Is Nothing OrElse operationTree.SelectedNode.Tag Is Nothing OrElse CStr(operationTree.SelectedNode.Tag) <> "catalog" Then
-            Throw New InvalidOperationException("Catalogue must be visibly selected on startup.")
-        End If
-        If Marketplaces.Count <> 23 Then Throw New InvalidOperationException("Marketplace list must contain 23 entries.")
-        If Marketplaces.Select(Function(m) m.Id).Distinct(StringComparer.Ordinal).Count() <> Marketplaces.Count Then Throw New InvalidOperationException("Marketplace IDs must be unique.")
-        If Operations.Select(Function(op) op.Id).Distinct(StringComparer.Ordinal).Count() <> Operations.Count Then Throw New InvalidOperationException("Operation IDs must be unique.")
-
-        cboEnvironment.SelectedIndex = 0
-        CatalogResultEnvironment = "sandbox"
-        If DatabaseEnvironmentAllowed() Then Throw New InvalidOperationException("Sandbox results must never enable database writes.")
-        cboEnvironment.SelectedIndex = 1
-        If DatabaseEnvironmentAllowed() Then Throw New InvalidOperationException("Switching to Production must not permit saving an old Sandbox result.")
-        CatalogResultEnvironment = ""
-        cboEnvironment.SelectedIndex = 0
-        For Each operation In Operations
-            SelectOperation(operation.Id)
-            If requestPanel.Controls.Count = 0 Then Throw New InvalidOperationException("No UI controls were built for " & operation.Id & ".")
-
-            If operation.Kind <> "legacy" AndAlso operation.Id <> "inventory" Then
-                LoadSandboxExample()
-                If B("confirmed") Then Throw New InvalidOperationException("Sandbox examples must not auto-confirm writes for " & operation.Id & ".")
-            End If
-        Next
-
-        SelectOperation("catalog")
-        FieldValues("catalogMode") = "identifier"
-        BuildOperationFields()
-        LoadSandboxExample()
-        If S("query") <> "B07N4M94X4" Then Throw New InvalidOperationException("Catalog Sandbox example did not remain loaded.")
-        If S("identifierType") <> "ASIN" Then Throw New InvalidOperationException("Catalog Sandbox identifier type is incorrect.")
-
-        SelectOperation("createReport")
-        FieldValues("confirmed") = True
-        BuildOperationFields()
-        Dim reportTypeControl As Control = Nothing
-        If Not FieldControls.TryGetValue("reportType", reportTypeControl) Then Throw New InvalidOperationException("Create report field was not built.")
-        DirectCast(reportTypeControl, TextBox).Text = "GET_MERCHANT_LISTINGS_ALL_DATA_TEST"
-        If B("confirmed") Then Throw New InvalidOperationException("Changing a write input must invalidate confirmation.")
-
-        FieldValues("confirmed") = True
-        BuildOperationFields()
-        Dim confirmationControl As Control = Nothing
-        If Not FieldControls.TryGetValue("confirmed", confirmationControl) Then Throw New InvalidOperationException("Write confirmation checkbox was not built.")
-        DirectCast(confirmationControl, CheckBox).Checked = True
-        InvalidateConnectionState()
-        If DirectCast(confirmationControl, CheckBox).Checked OrElse B("confirmed") Then Throw New InvalidOperationException("Credential/context changes must visibly clear write confirmation.")
-
-        SelectMarketplaceById("ATVPDKIKX0DER")
-        cboEnvironment.SelectedIndex = 0
-        If Endpoint() <> "https://sandbox.sellingpartnerapi-na.amazon.com" Then Throw New InvalidOperationException("North America Sandbox endpoint is incorrect.")
-        If CurrentApiEnvironment().Name <> "sandbox" OrElse CurrentApiEnvironment().IncludeCatalogLocale OrElse CurrentApiEnvironment().UploadFeedContent Then
-            Throw New InvalidOperationException("Sandbox API behavior is not isolated correctly.")
-        End If
-        If CurrentApiEnvironment().DocumentPath("/document") <> "/document" Then Throw New InvalidOperationException("Sandbox document request is incorrect.")
-        If SandboxApiEnvironment.Instance.Endpoint("eu") <> "https://sandbox.sellingpartnerapi-eu.amazon.com" Then Throw New InvalidOperationException("Europe Sandbox endpoint is incorrect.")
-        If SandboxApiEnvironment.Instance.Endpoint("fe") <> "https://sandbox.sellingpartnerapi-fe.amazon.com" Then Throw New InvalidOperationException("Far East Sandbox endpoint is incorrect.")
-        If SandboxApiEnvironment.Instance.TestConnectionPath <> "/sellers/v1/marketplaceParticipations" Then Throw New InvalidOperationException("Sandbox connection probe is incorrect.")
-        cboEnvironment.SelectedIndex = 1
-        If Endpoint() <> "https://sellingpartnerapi-na.amazon.com" Then Throw New InvalidOperationException("North America Production endpoint is incorrect.")
-        If CurrentApiEnvironment().Name <> "production" OrElse Not CurrentApiEnvironment().IncludeCatalogLocale OrElse Not CurrentApiEnvironment().UploadFeedContent Then
-            Throw New InvalidOperationException("Production API behavior is not isolated correctly.")
-        End If
-        If CurrentApiEnvironment().DocumentPath("/document") <> "/document?enableContentEncodingUrlHeader=true" Then Throw New InvalidOperationException("Production document request is incorrect.")
-        If ProductionApiEnvironment.Instance.Endpoint("eu") <> "https://sellingpartnerapi-eu.amazon.com" Then Throw New InvalidOperationException("Europe Production endpoint is incorrect.")
-        If ProductionApiEnvironment.Instance.Endpoint("fe") <> "https://sellingpartnerapi-fe.amazon.com" Then Throw New InvalidOperationException("Far East Production endpoint is incorrect.")
-        If ProductionApiEnvironment.Instance.TestConnectionPath <> "/sellers/v1/marketplaceParticipations" Then Throw New InvalidOperationException("Production connection probe is incorrect.")
-
-        SelectMarketplaceById("A1F83G8C2ARO7P")
-        If Endpoint() <> "https://sellingpartnerapi-eu.amazon.com" Then Throw New InvalidOperationException("Europe Production endpoint is incorrect.")
-
-        SelectMarketplaceById("A1VC38T7YXB528")
-        If Endpoint() <> "https://sellingpartnerapi-fe.amazon.com" Then Throw New InvalidOperationException("Far East Production endpoint is incorrect.")
-
-        If SafeHttpsUrl("http://example.com/file") <> "" Then Throw New InvalidOperationException("HTTP document URLs must be rejected.")
-        If SafeHttpsUrl("https://example.com/file") = "" Then Throw New InvalidOperationException("HTTPS document URLs should be accepted.")
-
-        Dim testDocuments = New Dictionary(Of String, Object) From {
-            {"documentDownloads", New Object() {
-                New Dictionary(Of String, Object) From {{"uri", "https://example.com/one.pdf"}, {"downloadType", "PDF"}},
-                New Dictionary(Of String, Object) From {{"uri", "https://example.com/two.pdf"}, {"downloadType", "ZPL"}}
-            }}
-        }
-        If FindDocumentUrls(testDocuments).Count <> 2 Then Throw New InvalidOperationException("All returned document links must remain accessible.")
-
-        If Not ValidIsoInstant("2026-09-23T10:00:00Z") Then Throw New InvalidOperationException("Valid ISO timestamp was rejected.")
-        If ValidIsoInstant("2026-09-23 10:00:00") Then Throw New InvalidOperationException("Timestamp without explicit timezone must be rejected.")
-
-        Dim csv = ParseCsvLine("""SKU,ONE"", 2, SELLER, SELLER")
-        If csv.Count <> 4 OrElse csv(0) <> "SKU,ONE" OrElse csv(1) <> "2" Then Throw New InvalidOperationException("Quoted CSV item parsing is incorrect.")
-
-        If NormalizeIncludedData(DefaultCatalogData) <> DefaultCatalogData Then Throw New InvalidOperationException("Default Catalog datasets changed unexpectedly.")
-        Dim invalidDatasetRejected As Boolean = False
-        Try
-            NormalizeIncludedData("summaries,notARealDataset")
-        Catch ex As AppException
-            invalidDatasetRejected = (ex.Code = "INVALID_CATALOG_INCLUDED_DATA")
-        End Try
-        If Not invalidDatasetRejected Then Throw New InvalidOperationException("Invalid Catalog includedData must be rejected.")
-
-        SelectOperation("catalog")
-        FieldValues("pageToken") = "STALE"
-        BuildOperationFields()
-        SelectOperation("fees")
-        If S("pageToken") <> "" Then Throw New InvalidOperationException("Changing operations must clear stale pagination tokens.")
-
-        SelectOperation("catalog")
-        Dim pagedResult As New ApiResult With {
-            .Ok = True,
-            .Status = 200,
-            .Data = New Dictionary(Of String, Object) From {
-                {"pagination", New Dictionary(Of String, Object) From {{"nextToken", "NEXT_TOKEN"}}}
-            }
-        }
-        ConfigureNextStep("catalog", pagedResult)
-        If NextOperationId <> "catalog" OrElse NextFieldKey <> "pageToken" OrElse NextFieldValue <> "NEXT_TOKEN" Then Throw New InvalidOperationException("Catalog next-page action was not prepared.")
-        OpenNextStep(Nothing, EventArgs.Empty)
-        If S("pageToken") <> "NEXT_TOKEN" Then Throw New InvalidOperationException("Catalog next-page token was not loaded into the form.")
-
-        Dim failedFeed As New ApiResult With {
-            .Ok = False,
-            .Status = 422,
-            .Data = New Dictionary(Of String, Object) From {{"resultFeedDocumentId", "result-doc"}}
-        }
-        ConfigureNextStep("feed", failedFeed)
-        If NextOperationId <> "feedDocument" OrElse NextFieldValue <> "result-doc" Then Throw New InvalidOperationException("Failed feed processing report must remain reachable.")
-
-        SelectOperation("orders")
-        Dim orderListResult As New ApiResult With {
-            .Ok = True,
-            .Status = 200,
-            .Data = New Dictionary(Of String, Object) From {
-                {"orders", New Object() {
-                    New Dictionary(Of String, Object) From {{"orderId", "ORDER-1"}},
-                    New Dictionary(Of String, Object) From {{"orderId", "ORDER-2"}}
-                }}
-            }
-        }
-        ConfigureReturnedRecords("orders", orderListResult)
-        If ReturnedRecordActions.Count <> 2 Then Throw New InvalidOperationException("Returned order selector did not expose every record.")
-        cboReturnedRecords.SelectedIndex = 1
-        OpenReturnedRecord(Nothing, EventArgs.Empty)
-        If CurrentOperation <> "order" OrElse S("orderId") <> "ORDER-2" Then Throw New InvalidOperationException("Returned order selector did not carry the selected ID forward.")
-
-        Dim tooManyValuesRejected As Boolean = False
-        Try
-            SplitValues(String.Join(",", Enumerable.Range(1, 26).Select(Function(i) "M" & i.ToString(CultureInfo.InvariantCulture))), 25)
-        Catch ex As AppException
-            tooManyValuesRejected = (ex.Code = "TOO_MANY_VALUES")
-        End Try
-        If Not tooManyValuesRejected Then Throw New InvalidOperationException("25-value marketplace limit guard is not working.")
-
-        ValidateContentType("application/json; charset=UTF-8")
-        Dim invalidContentTypeRejected As Boolean = False
-        Try
-            ValidateContentType("not a media type <>")
-        Catch ex As AppException
-            invalidContentTypeRejected = (ex.Code = "INVALID_CONTENT_TYPE")
-        End Try
-        If Not invalidContentTypeRejected Then Throw New InvalidOperationException("Invalid feed Content-Type must be rejected before an Amazon write.")
-
-        Dim catalogViewResult As New ApiResult With {
-            .Ok = True,
-            .Status = 200,
-            .Data = New Dictionary(Of String, Object) From {
-                {"items", New Object() {
-                    New Dictionary(Of String, Object) From {
-                        {"asin", "B000TEST01"},
-                        {"summaries", New Object() {
-                            New Dictionary(Of String, Object) From {
-                                {"itemName", "Test Product"},
-                                {"brand", "Test Brand"},
-                                {"marketplaceId", "ATVPDKIKX0DER"}
-                            }
-                        }},
-                        {"productTypes", New Object() {
-                            New Dictionary(Of String, Object) From {{"productType", "TEST_PRODUCT"}}
-                        }}
-                    }
-                }}
-            }
-        }
-        RenderResultView("catalog", catalogViewResult)
-        If viewGrid.Rows.Count <> 1 Then Throw New InvalidOperationException("Catalog View did not render the returned product.")
-        If viewGrid.Columns.Count < 4 Then Throw New InvalidOperationException("Catalog View is missing product columns.")
-        If Convert.ToString(viewGrid.Rows(0).Cells(1).Value, CultureInfo.InvariantCulture) <> "Test Product" Then Throw New InvalidOperationException("Catalog View did not show the product title.")
-        If catalogSectionsPanel.Controls.Count < 6 Then Throw New InvalidOperationException("Catalog View did not render the complete product page sections.")
-        If Not viewSplit.Panel1Collapsed Then Throw New InvalidOperationException("A single catalogue record must use the full product-page width.")
-        ShowResultWorkspace()
-        If Not workspaceSplit.Panel1Collapsed Then Throw New InvalidOperationException("Result page did not expand over the request editor.")
-        ShowRequestWorkspace()
-        If workspaceSplit.Panel1Collapsed Then Throw New InvalidOperationException("Edit request did not restore the request editor.")
-
-        Dim richCatalogItem As New Dictionary(Of String, Object) From {
-            {"attributes", New Dictionary(Of String, Object) From {
-                {"product_description", New Object() {New Dictionary(Of String, Object) From {{"value", "A useful <b>product</b>."}}}},
-                {"bullet_point", New Object() {New Dictionary(Of String, Object) From {{"value", "First benefit"}}}}
-            }},
-            {"images", New Object() {
-                New Dictionary(Of String, Object) From {
-                    {"images", New Object() {New Dictionary(Of String, Object) From {{"variant", "MAIN"}, {"link", "https://m.media-amazon.com/images/I/test.jpg"}}}}
-                }
-            }}
-        }
-        If Not CatalogDescription(richCatalogItem).Contains("A useful product.") OrElse Not CatalogDescription(richCatalogItem).Contains("First benefit") Then Throw New InvalidOperationException("Catalog product page did not render description and bullet attributes.")
-        If FindCatalogImageUrls(richCatalogItem).Count <> 1 Then Throw New InvalidOperationException("Catalog product page did not retain the returned HTTPS image.")
-        RenderCatalogProductSections(richCatalogItem)
-        If catalogSectionsPanel.Controls.Count < 6 Then Throw New InvalidOperationException("Catalog product sections did not render as a continuous page.")
-
-        Dim ordersViewResult As New ApiResult With {
-            .Ok = True,
-            .Status = 200,
-            .Data = New Dictionary(Of String, Object) From {
-                {"orders", New Object() {
-                    New Dictionary(Of String, Object) From {
-                        {"orderId", "ORDER-VIEW-1"},
-                        {"createdTime", "2026-09-24T10:00:00Z"},
-                        {"salesChannel", "Amazon.com"},
-                        {"fulfillment", New Dictionary(Of String, Object) From {
-                            {"fulfillmentStatus", "SHIPPED"},
-                            {"fulfilledBy", "AMAZON"}
-                        }},
-                        {"proceeds", New Dictionary(Of String, Object) From {
-                            {"grandTotal", New Dictionary(Of String, Object) From {
-                                {"currencyCode", "USD"},
-                                {"amount", "25.50"}
-                            }}
-                        }}
-                    },
-                    New Dictionary(Of String, Object) From {
-                        {"orderId", "ORDER-VIEW-2"},
-                        {"createdTime", "2026-09-24T11:00:00Z"},
-                        {"fulfillment", New Dictionary(Of String, Object) From {
-                            {"fulfillmentStatus", "UNSHIPPED"},
-                            {"fulfilledBy", "MERCHANT"}
-                        }}
-                    }
-                }}
-            }
-        }
-        RenderResultView("orders", ordersViewResult)
-        If viewGrid.Rows.Count <> 2 Then Throw New InvalidOperationException("Orders View did not render every returned order.")
-        If Convert.ToString(viewGrid.Rows(0).Cells(0).Value, CultureInfo.InvariantCulture) <> "ORDER-VIEW-1" Then Throw New InvalidOperationException("Orders View did not show the order ID.")
-        If Convert.ToString(viewGrid.Rows(0).Cells(5).Value, CultureInfo.InvariantCulture) <> "USD 25.50" Then Throw New InvalidOperationException("Orders View did not show the Orders 2026 grand total.")
-
-        Dim inventoryViewResult As New ApiResult With {
-            .Ok = True,
-            .Status = 200,
-            .Data = New Dictionary(Of String, Object) From {
-                {"payload", New Dictionary(Of String, Object) From {
-                    {"inventorySummaries", New Object() {
-                        New Dictionary(Of String, Object) From {
-                            {"productName", "Inventory Product"},
-                            {"sellerSku", "SKU-1"},
-                            {"asin", "ASIN-1"},
-                            {"totalQuantity", 10},
-                            {"inventoryDetails", New Dictionary(Of String, Object) From {
-                                {"fulfillableQuantity", 7},
-                                {"reservedQuantity", New Dictionary(Of String, Object) From {{"totalReservedQuantity", 2}}},
-                                {"unfulfillableQuantity", New Dictionary(Of String, Object) From {{"totalUnfulfillableQuantity", 1}}}
-                            }}
-                        }
-                    }}
-                }}
-            }
-        }
-        RenderResultView("inventory", inventoryViewResult)
-        If viewGrid.Rows.Count <> 1 OrElse Convert.ToString(viewGrid.Rows(0).Cells(3).Value, CultureInfo.InvariantCulture) <> "7" Then Throw New InvalidOperationException("Inventory View did not show fulfillable quantity.")
-
-        Dim prepViewResult As New ApiResult With {
-            .Ok = True,
-            .Status = 200,
-            .Data = New Dictionary(Of String, Object) From {
-                {"mskuPrepDetails", New Object() {
-                    New Dictionary(Of String, Object) From {
-                        {"msku", "MSKU-1"},
-                        {"prepCategory", "FRAGILE"},
-                        {"prepTypes", New Object() {"ITEM_BUBBLEWRAP", "ITEM_LABELING"}}
-                    }
-                }}
-            }
-        }
-        RenderResultView("prepDetails", prepViewResult)
-        If viewGrid.Rows.Count <> 1 OrElse Not Convert.ToString(viewGrid.Rows(0).Cells(2).Value, CultureInfo.InvariantCulture).Contains("Item Bubblewrap") Then Throw New InvalidOperationException("Prep View did not render prep types readably.")
-
-        Dim documentViewResult As New ApiResult With {
-            .Ok = True,
-            .Status = 200,
-            .Data = New Dictionary(Of String, Object) From {
-                {"payload", New Dictionary(Of String, Object) From {{"DownloadURL", "https://example.com/document.pdf"}}}
-            }
-        }
-        RenderResultView("billOfLading", documentViewResult)
-        If viewDetails.Rows.Count = 0 Then Throw New InvalidOperationException("Document View did not render payload download information.")
-
-        Dim singleOrderViewResult As New ApiResult With {
-            .Ok = True,
-            .Status = 200,
-            .Data = New Dictionary(Of String, Object) From {
-                {"orderId", "ORDER-SINGLE"},
-                {"createdTime", "2026-09-24T10:00:00Z"},
-                {"fulfillment", New Dictionary(Of String, Object) From {{"fulfillmentStatus", "SHIPPED"}}},
-                {"orderItems", New Object() {
-                    New Dictionary(Of String, Object) From {
-                        {"quantityOrdered", 2},
-                        {"product", New Dictionary(Of String, Object) From {
-                            {"asin", "ASIN-ITEM"},
-                            {"sellerSku", "SKU-ITEM"},
-                            {"title", "Order Item"},
-                            {"price", New Dictionary(Of String, Object) From {{"currencyCode", "USD"}, {"amount", "9.99"}}}
-                        }}
-                    }
-                }}
-            }
-        }
-        RenderResultView("order", singleOrderViewResult)
-        If viewGrid.Rows.Count <> 1 OrElse Convert.ToString(viewGrid.Rows(0).Cells(2).Value, CultureInfo.InvariantCulture) <> "Order Item" Then Throw New InvalidOperationException("Single Order View did not render order items.")
-
-        Dim viewFailure As New ApiResult With {
-            .Ok = False,
-            .Status = 403,
-            .StatusText = "Forbidden",
-            .RequestId = "request-view-test",
-            .Problem = New ApiProblem With {.Code = "Unauthorized", .Message = "Test failure", .Action = "Check permissions."}
-        }
-        RenderResultView("orders", viewFailure)
-        If Not viewSplit.Panel1Collapsed Then Throw New InvalidOperationException("Failure View should show readable details without an empty record table.")
-        If viewDetails.Rows.Count = 0 Then Throw New InvalidOperationException("Failure View did not show error details.")
-
-        ' Representative business result views: amounts, IDs, statuses and selected details.
-        Dim feesView As New ApiResult With {
-            .Ok = True, .Status = 200,
-            .Data = New Dictionary(Of String, Object) From {
-                {"payload", New Dictionary(Of String, Object) From {
-                    {"FeesEstimateResult", New Dictionary(Of String, Object) From {
-                        {"Status", "Success"},
-                        {"FeesEstimate", New Dictionary(Of String, Object) From {
-                            {"TotalFeesEstimate", New Dictionary(Of String, Object) From {{"CurrencyCode", "USD"}, {"Amount", 3.45D}}},
-                            {"FeeDetailList", New Object() {
-                                New Dictionary(Of String, Object) From {
-                                    {"FeeType", "ReferralFee"},
-                                    {"FinalFee", New Dictionary(Of String, Object) From {{"CurrencyCode", "USD"}, {"Amount", 3.45D}}}
-                                }
-                            }}
-                        }}
-                    }}
-                }}
-            }
-        }
-        RenderResultView("fees", feesView)
-        If viewGrid.Rows.Count <> 1 Then Throw New InvalidOperationException("Fees View must show individual fees.")
-        If Not lblViewSubtitle.Text.Contains("USD") Then Throw New InvalidOperationException("Fees View must show currency and total.")
-
-        Dim reportsView As New ApiResult With {
-            .Ok = True, .Status = 200,
-            .Data = New Dictionary(Of String, Object) From {
-                {"reports", New Object() {
-                    New Dictionary(Of String, Object) From {{"reportId", "REPORT-1"}, {"reportType", "GET_MERCHANT_LISTINGS_ALL_DATA"}, {"processingStatus", "DONE"}},
-                    New Dictionary(Of String, Object) From {{"reportId", "REPORT-2"}, {"processingStatus", "IN_PROGRESS"}}
-                }}
-            }
-        }
-        RenderResultView("reports", reportsView)
-        If viewGrid.Rows.Count <> 2 Then Throw New InvalidOperationException("Reports View lost a returned report.")
-        If Convert.ToString(viewGrid.Rows(0).Cells(0).Value, CultureInfo.InvariantCulture) <> "REPORT-1" Then Throw New InvalidOperationException("Reports View must show the report ID.")
-
-        Dim feedsView As New ApiResult With {
-            .Ok = True, .Status = 200,
-            .Data = New Dictionary(Of String, Object) From {
-                {"feeds", New Object() {
-                    New Dictionary(Of String, Object) From {{"feedId", "FEED-1"}, {"feedType", "JSON_LISTINGS_FEED"}, {"processingStatus", "DONE"}, {"resultFeedDocumentId", "DOCUMENT-1"}}
-                }}
-            }
-        }
-        RenderResultView("feeds", feedsView)
-        If viewGrid.Rows.Count <> 1 Then Throw New InvalidOperationException("Feeds View lost a returned feed.")
-        If Convert.ToString(viewGrid.Rows(0).Cells(4).Value, CultureInfo.InvariantCulture) <> "DOCUMENT-1" Then Throw New InvalidOperationException("Feeds View must show the processing document ID.")
-
-        Dim plansView As New ApiResult With {
-            .Ok = True, .Status = 200,
-            .Data = New Dictionary(Of String, Object) From {
-                {"inboundPlans", New Object() {
-                    New Dictionary(Of String, Object) From {{"inboundPlanId", "PLAN-1"}, {"name", "Test Plan"}, {"status", "ACTIVE"}}
-                }}
-            }
-        }
-        RenderResultView("inboundPlans", plansView)
-        If viewGrid.Rows.Count <> 1 Then Throw New InvalidOperationException("Inbound View lost the plan.")
-        If Convert.ToString(viewGrid.Rows(0).Cells(0).Value, CultureInfo.InvariantCulture) <> "PLAN-1" Then Throw New InvalidOperationException("Inbound View must show the plan ID.")
-
-        ' Exercise every SP-API view without any real Amazon account in CI.
-        For Each operation In Operations
-            If operation.Kind = "legacy" Then Continue For
-            Dim emptyResult As New ApiResult With {
-                .Ok = True, .Status = 200,
-                .Data = New Dictionary(Of String, Object)()
-            }
-            RenderResultView(operation.Id, emptyResult)
-            If String.IsNullOrWhiteSpace(lblViewTitle.Text) Then
-                Throw New InvalidOperationException("Result View has no heading for " & operation.Id)
-            End If
-        Next
-
-        CachedAccessToken = "test-token"
-        CachedAccessTokenExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(10)
-        InvalidateConnectionState()
-        If CachedAccessToken <> "" Then Throw New InvalidOperationException("Credential/context changes must clear the cached access token.")
-
-        cboEnvironment.SelectedIndex = 0
-        SelectMarketplaceById("ATVPDKIKX0DER")
-        SelectOperation("catalog")
-    End Sub
 
     #End Region
 
@@ -743,6 +306,7 @@ Public Partial Class MainForm
     #End Region
 
     #Region "05 - Main window and reusable controls"
+    #Region "Window layout and connection fields"
     Private Sub BuildUi()
         Dim root As New TableLayoutPanel With {.Dock = DockStyle.Fill, .ColumnCount = 1, .RowCount = 2, .Padding = New Padding(12), .BackColor = Color.FromArgb(241, 245, 249)}
         root.RowStyles.Add(New RowStyle(SizeType.AutoSize))
@@ -799,7 +363,7 @@ Public Partial Class MainForm
         cGrid.SetColumnSpan(chkShowSecrets, 2)
 
         Dim credentialNote As New Label With {
-            .Text = "Credentials stay in this running app only; they are not saved to disk.",
+            .Text = "Defaults load from Project Settings. Edits here apply only until you close the app.",
             .AutoSize = True,
             .ForeColor = Color.DimGray,
             .Margin = New Padding(3, 8, 3, 4)
@@ -856,7 +420,7 @@ Public Partial Class MainForm
         workspaceSplit.Panel1.Controls.Add(requestHost)
         lblOperation.Dock = DockStyle.Top
         lblOperation.Height = 34
-        lblOperation.Font = New Font("Bahnschrift SemiBold", 15.0F, FontStyle.Bold)
+        lblOperation.Font = New Font("Segoe UI Semibold", 15.0F, FontStyle.Bold)
         lblOperation.ForeColor = Color.FromArgb(15, 23, 42)
         requestHost.Controls.Add(lblOperation)
 
@@ -926,7 +490,7 @@ Public Partial Class MainForm
         txtResult.ScrollBars = ScrollBars.Both
         txtResult.ReadOnly = True
         txtResult.WordWrap = False
-        txtResult.Font = New Font("Consolas", 9.0F)
+        txtResult.Font = New Font("Segoe UI", 10.0F)
         resultLayout.Controls.Add(txtResult, 0, 1)
 
         Dim resultActions As New FlowLayoutPanel With {
@@ -978,7 +542,7 @@ Public Partial Class MainForm
 
         appTooltips.SetToolTip(btnRun, "Run the selected operation (Ctrl+Enter)")
         appTooltips.SetToolTip(btnTest, "Verify the selected environment and marketplace credentials")
-        appTooltips.SetToolTip(cboEnvironment, "Sandbox uses Amazon test fixtures; Production uses the live seller account")
+        appTooltips.SetToolTip(cboEnvironment, "Sandbox uses test data. Production uses your live seller account.")
         appTooltips.SetToolTip(txtSqlConnection, "Loaded from Project Properties > Settings > FTSSQL. Changes here apply to this session only.")
         appTooltips.SetToolTip(btnTestDatabase, "Test SQL Server read access to InventoryDimensions without changing records.")
         appTooltips.SetToolTip(btnSaveDatabase, "Review and save the selected ASIN. Details appear in the Database tab.")
@@ -996,6 +560,9 @@ Public Partial Class MainForm
         AddHandler Me.KeyDown, AddressOf MainFormKeyDown
     End Sub
 
+    #End Region
+
+    #Region "Result page layout and action buttons"
     Private Sub BuildResultView(viewTab As TabPage)
         Dim canvas = Color.FromArgb(247, 245, 240)
         Dim ink = Color.FromArgb(30, 38, 48)
@@ -1016,7 +583,7 @@ Public Partial Class MainForm
         viewTab.Controls.Add(layout)
 
         lblViewTitle.AutoSize = True
-        lblViewTitle.Font = New Font("Bahnschrift SemiBold", 17.0F, FontStyle.Bold)
+        lblViewTitle.Font = New Font("Segoe UI Semibold", 17.0F, FontStyle.Bold)
         lblViewTitle.ForeColor = ink
         lblViewTitle.Text = "No result yet"
         lblViewTitle.Margin = New Padding(3, 2, 3, 2)
@@ -1025,7 +592,7 @@ Public Partial Class MainForm
         lblViewSubtitle.AutoSize = True
         lblViewSubtitle.ForeColor = Color.DimGray
         lblViewSubtitle.MaximumSize = New Size(1000, 0)
-        lblViewSubtitle.Text = "Run an operation to see a readable view here."
+        lblViewSubtitle.Text = "Run a request to see its results."
         lblViewSubtitle.Margin = New Padding(3, 0, 3, 8)
         layout.Controls.Add(lblViewSubtitle, 0, 1)
 
@@ -1190,7 +757,7 @@ Public Partial Class MainForm
         viewActions.Controls.Add(btnOpenDocument)
 
         Dim lblSqlConnection As New Label With {
-            .Text = "SQL Server (FTSSQL):",
+            .Text = "Database connection:",
             .AutoSize = True,
             .Margin = New Padding(6, 9, 4, 2)
         }
@@ -1223,6 +790,9 @@ Public Partial Class MainForm
         layout.Controls.Add(viewActions, 0, 3)
     End Sub
 
+    #End Region
+
+    #Region "Product title, images and description layout"
     Private Sub BuildCatalogHero(ink As Color, accent As Color, canvas As Color)
         catalogHero.Dock = DockStyle.Fill
         catalogHero.ColumnCount = 2
@@ -1334,7 +904,7 @@ Public Partial Class MainForm
         copy.Controls.Add(lblProductEyebrow, 0, 0)
 
         lblProductTitle.AutoSize = True
-        lblProductTitle.Font = New Font("Bahnschrift SemiBold", 15.0F, FontStyle.Bold)
+        lblProductTitle.Font = New Font("Segoe UI Semibold", 15.0F, FontStyle.Bold)
         lblProductTitle.ForeColor = ink
         lblProductTitle.MaximumSize = New Size(700, 58)
         lblProductTitle.Margin = New Padding(0, 0, 0, 5)
@@ -1368,6 +938,9 @@ Public Partial Class MainForm
         catalogHero.Controls.Add(copy, 1, 0)
     End Sub
 
+    #End Region
+
+    #Region "Navigation and resizable request/results workspace"
     Private Sub ShowResultWorkspace()
         If workspaceSplit Is Nothing Then Return
         workspaceSplit.Panel1Collapsed = True
@@ -1387,7 +960,7 @@ Public Partial Class MainForm
         Dim bounds = workspaceSplit.SplitterRectangle
         If bounds.Width <= 0 OrElse bounds.Height <= 0 Then Return
 
-        Dim splitterColor = If(IsSandbox(), Color.FromArgb(37, 99, 235), Color.FromArgb(185, 28, 28))
+        Dim splitterColor = EnvironmentAccent()
         Using splitterBrush As New SolidBrush(splitterColor)
             e.Graphics.FillRectangle(splitterBrush, bounds)
         End Using
@@ -1421,7 +994,7 @@ Public Partial Class MainForm
     Private Sub BuildOperationTree()
         operationTree.BeginUpdate()
         operationTree.Nodes.Clear()
-        For Each group In Operations.GroupBy(Function(x) x.Group)
+        For Each group In Operations.Where(Function(item) item.Kind <> "legacy").GroupBy(Function(x) x.Group)
             Dim groupNode As New TreeNode(group.Key)
             For Each op In group
                 groupNode.Nodes.Add(New TreeNode(op.Label) With {.Tag = op.Id})
@@ -1453,9 +1026,9 @@ Public Partial Class MainForm
         lblOperation.Text = operation.Label
         UpdateRunButtonPresentation()
         BuildOperationFields()
-        txtResult.Text = If(operation.Kind = "legacy", "This SQL Server utility is separate from Amazon SP-API and remains disconnected.", "Run the selected request to see a readable result here.")
+        txtResult.Text = If(operation.Kind = "legacy", "This SQL Server utility is separate from Amazon SP-API and remains disconnected.", "Run a request to see its results.")
         txtRaw.Text = If(operation.Kind = "legacy", "", "The complete Amazon response will appear here.")
-        ClearResultView(If(operation.Kind = "legacy", "Legacy utility", operation.Label), If(operation.Kind = "legacy", "This legacy SQL Server utility is not yet connected.", "Run the request to see the returned data here."))
+        ClearResultView(If(operation.Kind = "legacy", "Legacy utility", operation.Label), If(operation.Kind = "legacy", "This legacy SQL Server utility is not yet connected.", "Run a request to see its results."))
         lblMeta.Text = ""
         btnOpenDocument.Visible = False
         cboDocuments.Visible = False
@@ -1469,8 +1042,10 @@ Public Partial Class MainForm
         NextOperationId = ""
         NextFieldKey = ""
         NextFieldValue = ""
-        btnRun.Enabled = operation.Kind <> "legacy"
+        btnRun.Enabled = ConnectionVerified AndAlso Not RequestBusy AndAlso operation.Kind <> "legacy"
     End Sub
+
+    #End Region
 
     #End Region
 
@@ -1487,13 +1062,9 @@ Public Partial Class MainForm
         Else
             lblSandbox.Visible = True
             If IsSandbox() Then
-                lblSandbox.Text = "SANDBOX  |  Amazon test endpoint using predefined fixtures. No Production data is changed."
-                lblSandbox.BackColor = Color.FromArgb(239, 246, 255)
-                lblSandbox.ForeColor = Color.FromArgb(30, 64, 175)
+                lblSandbox.Text = "SANDBOX  |  Test data only. Database saves are unavailable."
             Else
                 lblSandbox.Text = "PRODUCTION  |  Live seller account. Reads use live data and confirmed writes can change Amazon data."
-                lblSandbox.BackColor = Color.FromArgb(254, 242, 242)
-                lblSandbox.ForeColor = Color.FromArgb(153, 27, 27)
             End If
         End If
 
@@ -1538,12 +1109,12 @@ Public Partial Class MainForm
                 AddText("fulfilledBy", "Fulfilled by")
                 AddText("pageSize", "Results per page")
                 AddText("orderPaginationToken", "Next-page token")
-                AddText("orderIncludedData", "Included data override", False, True)
-                AddCheck("includeOrderPii", "Include buyer + recipient PII when no override is supplied")
+                AddText("orderIncludedData", "Requested data (optional)", False, True)
+                AddCheck("includeOrderPii", "Include buyer and recipient details")
             Case "order"
                 AddText("orderId", "Amazon order ID", True)
-                AddText("orderIncludedData", "Included data override", False, True)
-                AddCheck("includeOrderPii", "Include buyer + recipient PII when no override is supplied")
+                AddText("orderIncludedData", "Requested data (optional)", False, True)
+                AddCheck("includeOrderPii", "Include buyer and recipient details")
             Case "reports"
                 AddText("reportTypes", "Report type(s)", False, True)
                 AddText("processingStatuses", "Processing statuses")
@@ -1557,7 +1128,7 @@ Public Partial Class MainForm
                 AddText("reportMarketplaceIds", "Marketplace IDs")
                 AddText("dataStartTime", "Data start")
                 AddText("dataEndTime", "Data end")
-                AddCheck("confirmed", "I understand this starts a report job using exactly these values.")
+                AddCheck("confirmed", "I confirm this report request.")
             Case "report"
                 AddText("reportId", "Report ID", True)
             Case "reportDocument"
@@ -1579,7 +1150,7 @@ Public Partial Class MainForm
                 AddText("feedMarketplaceIds", "Marketplace IDs")
                 AddText("contentType", "Content type", True)
                 AddText("content", "Feed content", True, True, 130)
-                AddCheck("confirmed", "I understand this submits the feed using exactly these values.")
+                AddCheck("confirmed", "I confirm this feed submission.")
             Case "inboundPlans"
                 AddChoice("status", "Plan status", {"", "ACTIVE", "SHIPPED", "VOIDED"})
                 AddChoice("sortBy", "Sort by", {"LAST_UPDATED_TIME", "CREATION_TIME"})
@@ -1610,7 +1181,7 @@ Public Partial Class MainForm
                 AddText("countryCode", "Country code")
                 AddText("phoneNumber", "Phone number", True)
                 AddText("email", "Email")
-                AddCheck("confirmed", "I understand this creates an inbound plan using exactly these values.")
+                AddCheck("confirmed", "I confirm this inbound plan.")
             Case "itemLabels"
                 AddText("items", "Items: MSKU, quantity", True, True)
                 AddChoice("labelType", "Label format", {"STANDARD_FORMAT", "THERMAL_PRINTING"}, True, AddressOf RebuildOnChange)
@@ -1714,7 +1285,7 @@ Public Partial Class MainForm
 
     Private Sub AddSandboxExampleButton()
         Dim button As New Button With {
-            .Text = "Load Sandbox example into the form",
+            .Text = "Load test example",
             .AutoSize = True,
             .Padding = New Padding(8, 3, 8, 3),
             .Margin = New Padding(3, 2, 3, 8),
@@ -1821,40 +1392,31 @@ Public Partial Class MainForm
 
         If IsSandbox() Then
             btnRun.Text = "Run in Sandbox - " & operation.Label
-            btnRun.BackColor = Color.FromArgb(37, 99, 235)
         Else
             btnRun.Text = "Run LIVE - " & operation.Label
-            btnRun.BackColor = Color.FromArgb(185, 28, 28)
         End If
+        btnRun.BackColor = EnvironmentAccent()
+        btnRun.ForeColor = Color.White
         btnRun.AccessibleName = btnRun.Text
     End Sub
+
+    Private Function EnvironmentAccent() As Color
+        Return If(IsSandbox(), Color.FromArgb(15, 118, 110), Color.FromArgb(30, 58, 95))
+    End Function
 
     Private Sub ApplyEnvironmentVisualState()
         If cboEnvironment.SelectedIndex < 0 Then Return
 
-        If IsSandbox() Then
-            cboEnvironment.BackColor = Color.FromArgb(239, 246, 255)
-            cboEnvironment.ForeColor = Color.FromArgb(30, 64, 175)
-            btnTest.BackColor = Color.White
-            btnTest.ForeColor = Color.FromArgb(30, 64, 175)
-            btnTest.FlatAppearance.BorderColor = Color.FromArgb(96, 165, 250)
-            workspaceSplit.BackColor = Color.FromArgb(37, 99, 235)
-            If lblSandbox.Visible Then
-                lblSandbox.BackColor = Color.FromArgb(239, 246, 255)
-                lblSandbox.ForeColor = Color.FromArgb(30, 64, 175)
-            End If
-        Else
-            cboEnvironment.BackColor = Color.FromArgb(254, 242, 242)
-            cboEnvironment.ForeColor = Color.FromArgb(153, 27, 27)
-            btnTest.BackColor = Color.White
-            btnTest.ForeColor = Color.FromArgb(153, 27, 27)
-            btnTest.FlatAppearance.BorderColor = Color.FromArgb(248, 113, 113)
-            workspaceSplit.BackColor = Color.FromArgb(185, 28, 28)
-            If lblSandbox.Visible Then
-                lblSandbox.BackColor = Color.FromArgb(254, 242, 242)
-                lblSandbox.ForeColor = Color.FromArgb(153, 27, 27)
-            End If
-        End If
+        Dim accent = EnvironmentAccent()
+        cboEnvironment.FlatStyle = FlatStyle.Flat
+        cboEnvironment.BackColor = accent
+        cboEnvironment.ForeColor = Color.White
+        btnTest.BackColor = accent
+        btnTest.ForeColor = Color.White
+        btnTest.FlatAppearance.BorderColor = accent
+        workspaceSplit.BackColor = accent
+        lblSandbox.BackColor = accent
+        lblSandbox.ForeColor = Color.White
 
         UpdateRunButtonPresentation()
         workspaceSplit.Invalidate()
@@ -1874,7 +1436,7 @@ Public Partial Class MainForm
             Case "catalog" : Return "Find a catalogue item by ASIN/SKU/other identifier, or search by keywords. Related ASIN fetching is optional."
             Case "fees" : Return "Estimate Amazon selling fees for one ASIN or seller SKU at the price and fulfilment method you enter."
             Case "inventory" : Return "Read FBA inventory summaries. Seller SKUs and changed-since are optional filters."
-            Case "orders" : Return "Search Orders API 2026 by creation date. Buyer/recipient data is opt-in because it can contain PII."
+            Case "orders" : Return "Find orders by creation date. Buyer and recipient details are optional."
             Case "order" : Return "Retrieve one Amazon order by order ID."
             Case "reports" : Return "List report jobs. A next-page token is used by itself, exactly as Amazon requires."
             Case "createReport" : Return "Create a report job. Amazon first returns a report ID; use Report status until the job is DONE."
@@ -1908,10 +1470,18 @@ Public Partial Class MainForm
     End Sub
 
     Private Sub InvalidateConnectionState()
+        ConnectionVerified = False
+        CatalogResultEnvironment = ""
+        credentialErrors.Clear()
+        connectionTimer.Stop()
         CachedAccessToken = ""
         CachedAccessTokenExpiresUtc = DateTimeOffset.MinValue
         ClearWriteConfirmation()
-        SetConnectionStatus("Not tested", Color.FromArgb(71, 85, 105), Color.FromArgb(248, 250, 252))
+        btnRun.Enabled = False
+        UpdateDatabaseControls()
+        SetConnectionStatus(If(CredentialsReady(), "Connecting...", "Enter credentials"), Color.FromArgb(71, 85, 105), Color.FromArgb(248, 250, 252))
+        If IsHandleCreated AndAlso CredentialsReady() AndAlso Not RequestBusy AndAlso
+           Environment.GetEnvironmentVariable("SP_API_CI_SMOKE") <> "1" Then connectionTimer.Start()
         If cboEnvironment.SelectedIndex >= 0 Then btnTest.Text = "Test " & EnvironmentName() & " connection"
         ApplyEnvironmentVisualState()
     End Sub
@@ -2109,9 +1679,16 @@ Public Partial Class MainForm
     #End Region
 
     #Region "08 - Authentication checks and request execution"
-    Private Async Function TestConnectionAsync() As Task
+    Private Async Function TestConnectionAsync(Optional automatic As Boolean = False) As Task
+        If RequestBusy Then Return
+        connectionTimer.Stop()
+        ConnectionVerified = False
+        credentialErrors.SetError(txtClientId, If(txtClientId.Text.Trim() = "", "Enter the Client ID.", ""))
+        credentialErrors.SetError(txtClientSecret, If(txtClientSecret.Text.Trim() = "", "Enter the Client Secret.", ""))
+        credentialErrors.SetError(txtRefreshToken, If(txtRefreshToken.Text.Trim() = "", "Enter the Refresh Token.", ""))
         If Not CredentialsReady() Then
-            MessageBox.Show("Client ID, client secret, and refresh token are required.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            btnRun.Enabled = False
+            SetConnectionStatus("Enter credentials", Color.DimGray, Color.FromArgb(248, 250, 252))
             Return
         End If
         SetConnectionStatus("Testing " & EnvironmentName() & "...", Color.FromArgb(30, 64, 175), Color.FromArgb(239, 246, 255))
@@ -2119,18 +1696,19 @@ Public Partial Class MainForm
         Try
             Dim probe = Await TestConnectionRequestAsync()
             If Not probe.Ok Then
-                SetConnectionStatus("Connection failed - see Result", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
+                SetConnectionStatus("Connection failed — see details", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
                 ShowResult("connection", probe)
                 Return
             End If
 
-            SetConnectionStatus("Connected to " & EnvironmentName() & " - " & SelectedMarketplace().Name, Color.FromArgb(22, 101, 52), Color.FromArgb(240, 253, 244))
-            ShowResult("connection", probe)
+            ConnectionVerified = True
+            SetConnectionStatus(Char.ConvertFromUtf32(&H25CF) & " Connected", Color.FromArgb(22, 101, 52), Color.FromArgb(240, 253, 244))
+            If Not automatic Then ShowResult("connection", probe)
         Catch ex As AppException
-            SetConnectionStatus("Connection failed - see Result", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
+            SetConnectionStatus("Connection failed — see details", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
             ShowResult("connection", LocalFailure(ex))
         Catch ex As Exception
-            SetConnectionStatus("Connection failed - see Result", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
+            SetConnectionStatus("Connection failed — see details", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
             ShowResult("connection", LocalFailure(New AppException(ex.Message, 500, "CONNECTION_TEST_FAILED", ex.ToString())))
         Finally
             ToggleBusy(False, "")
@@ -2143,8 +1721,8 @@ Public Partial Class MainForm
             MessageBox.Show("This legacy SQL Server utility is not yet connected; only the InventoryDimensions catalogue update has been implemented.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information)
             Return
         End If
-        If Not CredentialsReady() Then
-            MessageBox.Show("Client ID, client secret, and refresh token are required.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning)
+        If Not ConnectionVerified OrElse Not CredentialsReady() OrElse RequestBusy Then
+            SetConnectionStatus("Connect before running a request", Color.DimGray, Color.FromArgb(248, 250, 252))
             Return
         End If
         If IsWriteOperation(CurrentOperation) AndAlso Not B("confirmed") Then
@@ -2188,7 +1766,8 @@ Public Partial Class MainForm
     End Function
 
     Private Sub ToggleBusy(busy As Boolean, message As String)
-        btnRun.Enabled = Not busy AndAlso Operations.First(Function(x) x.Id = CurrentOperation).Kind <> "legacy"
+        RequestBusy = busy
+        btnRun.Enabled = Not busy AndAlso ConnectionVerified AndAlso Operations.First(Function(x) x.Id = CurrentOperation).Kind <> "legacy"
         btnTest.Enabled = Not busy
         operationTree.Enabled = Not busy
         requestPanel.Enabled = Not busy
@@ -2199,6 +1778,7 @@ Public Partial Class MainForm
         cboMarketplace.Enabled = Not busy
         chkShowSecrets.Enabled = Not busy
         Cursor = If(busy, Cursors.WaitCursor, Cursors.Default)
+        UpdateDatabaseControls()
         If busy Then lblMeta.Text = message
     End Sub
 
@@ -2206,17 +1786,19 @@ Public Partial Class MainForm
         Dim code = If(result.Problem Is Nothing, "", result.Problem.Code).ToLowerInvariant()
 
         If result.Status = 401 OrElse code.Contains("invalid_grant") OrElse code.Contains("invalid_client") OrElse code.Contains("lwa_") Then
-            SetConnectionStatus("Authentication failed - see Result", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
+            ConnectionVerified = False
+            SetConnectionStatus("Credentials rejected — reconnect", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
             Return
         End If
 
         If code.Contains("amazon_network_error") OrElse code.Contains("amazon_timeout") OrElse code.Contains("no_response") Then
-            SetConnectionStatus("Connection problem - see Result", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
+            ConnectionVerified = False
+            SetConnectionStatus("Connection lost — reconnect", Color.FromArgb(153, 27, 27), Color.FromArgb(254, 242, 242))
             Return
         End If
 
-        If result.Ok OrElse result.RequestId <> "" Then
-            SetConnectionStatus("Connected to " & EnvironmentName() & " - " & SelectedMarketplace().Name, Color.FromArgb(22, 101, 52), Color.FromArgb(240, 253, 244))
+        If result.Ok Then
+            SetConnectionStatus(Char.ConvertFromUtf32(&H25CF) & " Connected", Color.FromArgb(22, 101, 52), Color.FromArgb(240, 253, 244))
         End If
     End Sub
 
@@ -2264,6 +1846,7 @@ Public Partial Class MainForm
     #End Region
 
     #Region "09 - Result view and catalogue presentation"
+    #Region "Result routing and product selection"
     Private Sub ClearResultView(title As String, subtitle As String)
         RenderingView = True
         Try
@@ -2493,6 +2076,9 @@ Public Partial Class MainForm
         End If
     End Sub
 
+    #End Region
+
+    #Region "Product content, image navigation and structured sections"
     Private Sub RenderCatalogProductDetail(item As Dictionary(Of String, Object))
         Dim summary = FirstDictionary(item, "summaries")
         Dim productType = FirstDictionary(item, "productTypes")
@@ -2837,7 +2423,7 @@ Public Partial Class MainForm
             .Text = title & If(count > 0, "   " & count.ToString(CultureInfo.InvariantCulture), ""),
             .AutoSize = True,
             .Dock = DockStyle.Fill,
-            .Font = New Font("Bahnschrift SemiBold", 12.0F, FontStyle.Bold),
+            .Font = New Font("Segoe UI Semibold", 12.0F, FontStyle.Bold),
             .ForeColor = Color.FromArgb(30, 38, 48),
             .BackColor = Color.FromArgb(247, 249, 252),
             .Padding = New Padding(8, 8, 8, 8),
@@ -2971,6 +2557,8 @@ Public Partial Class MainForm
         If TypeOf value Is Object() OrElse TypeOf value Is ArrayList OrElse TypeOf value Is IEnumerable(Of Object) Then Return ListValue(value).Count > 0
         Return Not String.IsNullOrWhiteSpace(ViewValue(value))
     End Function
+
+    #End Region
 
     #End Region
 
@@ -3689,6 +3277,23 @@ Public Partial Class MainForm
         lblDatabaseStatus.ForeColor = color
     End Sub
 
+    Private Function DatabaseErrorMessage(failure As Exception) As String
+        Dim sqlError = TryCast(failure, System.Data.SqlClient.SqlException)
+        If sqlError IsNot Nothing Then
+            Select Case sqlError.Number
+                Case 18456 : Return "Sign-in failed. Check the database account and its access permissions."
+                Case 4060 : Return "The database is unavailable. Check its name and your access permissions."
+                Case 2601, 2627 : Return "This product conflicts with an existing database record. Check the ASIN before retrying."
+                Case 515 : Return "The database requires an additional value. Check the required columns."
+                Case 2628, 8152 : Return "A product value is longer than its database column allows."
+                Case -2 : Return "The database took too long to respond. Check the connection and try again."
+                Case Else : Return "The database could not complete this operation. Check the server, permissions and table configuration. Error " & sqlError.Number.ToString(CultureInfo.InvariantCulture) & "."
+            End Select
+        End If
+        If TypeOf failure Is InvalidOperationException Then Return failure.Message
+        Return "Check the database connection and column types, then try again."
+    End Function
+
     Private Async Function TestDatabaseAsync() As Task
         Dim connectionString = txtSqlConnection.Text
         If DatabaseBusy OrElse String.IsNullOrWhiteSpace(connectionString) Then Return
@@ -3704,7 +3309,7 @@ Public Partial Class MainForm
         Catch ex As Exception
             DatabaseVerified = False
             SetDatabaseStatus("Connection failed", Color.Firebrick)
-            txtDatabaseDetails.Text = "Connection failed" & Environment.NewLine & Environment.NewLine & ex.Message
+            txtDatabaseDetails.Text = "Connection failed" & Environment.NewLine & Environment.NewLine & DatabaseErrorMessage(ex)
             tabs.SelectedTab = databaseTab
         Finally
             DatabaseBusy = False
@@ -3728,7 +3333,7 @@ Public Partial Class MainForm
     Private Sub UpdateDatabaseControls()
         btnTestDatabase.Enabled = Not DatabaseBusy AndAlso Not String.IsNullOrWhiteSpace(txtSqlConnection.Text)
         btnSaveDatabase.Visible = CurrentViewOperation = "catalog" AndAlso LastResult IsNot Nothing AndAlso LastResult.Ok
-        btnSaveDatabase.Enabled = Not DatabaseBusy AndAlso DatabaseVerified AndAlso btnSaveDatabase.Visible AndAlso
+        btnSaveDatabase.Enabled = ConnectionVerified AndAlso Not RequestBusy AndAlso Not DatabaseBusy AndAlso DatabaseVerified AndAlso btnSaveDatabase.Visible AndAlso
                                   SelectedCatalogItemForDatabase() IsNot Nothing
         If btnSaveDatabase.Visible Then
             btnSaveDatabase.Text = If(DatabaseBusy, "Working...", "Save to database")
@@ -3738,7 +3343,7 @@ Public Partial Class MainForm
 
     Private Async Function PreviewAndSaveDatabaseAsync() As Task
         If DatabaseBusy Then Return
-        If Not DatabaseVerified OrElse Not DatabaseEnvironmentAllowed() Then
+        If Not ConnectionVerified OrElse RequestBusy OrElse Not DatabaseVerified OrElse Not DatabaseEnvironmentAllowed() Then
             txtDatabaseDetails.Text = "Test the database connection first. Only Production catalogue results can be saved; Sandbox database writes are disabled."
             tabs.SelectedTab = databaseTab
             Return
@@ -3752,7 +3357,7 @@ Public Partial Class MainForm
         UpdateDatabaseControls()
         Try
             Dim preview = Await Task.Run(Function() InventoryDatabase.Preview(connectionString, product))
-            If Not DatabaseVerified OrElse Not DatabaseEnvironmentAllowed() OrElse SelectedCatalogItemForDatabase() Is Nothing OrElse
+            If Not ConnectionVerified OrElse Not DatabaseVerified OrElse Not DatabaseEnvironmentAllowed() OrElse SelectedCatalogItemForDatabase() Is Nothing OrElse
                Not String.Equals(connectionString, txtSqlConnection.Text, StringComparison.Ordinal) Then Return
             Dim target As New System.Data.SqlClient.SqlConnectionStringBuilder(connectionString)
             txtDatabaseDetails.Text = "Review database change" & Environment.NewLine &
@@ -3763,14 +3368,14 @@ Public Partial Class MainForm
                                          "The proposed values are shown in the Database tab.",
                                          "Save to database", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2)
             If answer <> DialogResult.Yes Then Return
-            If Not DatabaseVerified OrElse Not DatabaseEnvironmentAllowed() OrElse SelectedCatalogItemForDatabase() Is Nothing OrElse
+            If Not ConnectionVerified OrElse Not DatabaseVerified OrElse Not DatabaseEnvironmentAllowed() OrElse SelectedCatalogItemForDatabase() Is Nothing OrElse
                Not String.Equals(connectionString, txtSqlConnection.Text, StringComparison.Ordinal) Then Return
             Dim outcome = Await Task.Run(Function() InventoryDatabase.Save(connectionString, product, sandboxSave))
             SetDatabaseStatus("Connected", Color.FromArgb(22, 101, 52))
             txtDatabaseDetails.Text = "Saved successfully" & Environment.NewLine & Environment.NewLine & outcome &
                 Environment.NewLine & Environment.NewLine & "Database: " & target.InitialCatalog & Environment.NewLine & "Server: " & target.DataSource
         Catch ex As Exception
-            txtDatabaseDetails.Text = "Save could not be confirmed" & Environment.NewLine & Environment.NewLine & ex.Message
+            txtDatabaseDetails.Text = "Save could not be confirmed" & Environment.NewLine & Environment.NewLine & DatabaseErrorMessage(ex)
             tabs.SelectedTab = databaseTab
         Finally
             DatabaseBusy = False
@@ -4246,6 +3851,473 @@ Public Partial Class MainForm
         Catch ex As Exception
             MessageBox.Show("Could not open the document URL: " & ex.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error)
         End Try
+    End Sub
+    #End Region
+
+    #Region "14 - Tests"
+    Public Sub RunCiSelfTest()
+        If ConnectionVerified OrElse btnRun.Enabled Then Throw New InvalidOperationException("Requests must be locked before connection verification.")
+        Dim originalClientId = txtClientId.Text
+        ConnectionVerified = True
+        txtClientId.Text = originalClientId & "-changed"
+        If ConnectionVerified OrElse btnRun.Enabled OrElse btnSaveDatabase.Enabled Then
+            Throw New InvalidOperationException("Changing a credential must immediately lock requests and database saves.")
+        End If
+        txtClientId.Text = originalClientId
+        If CurrentOperation <> "catalog" Then Throw New InvalidOperationException("Catalogue must be the initial active workflow.")
+        If btnSaveDatabase.Enabled OrElse DatabaseVerified Then Throw New InvalidOperationException("SQL Server save must not be active until the connection has been tested.")
+        If txtSqlConnection.Text <> My.Settings.FTSSQL Then Throw New InvalidOperationException("The SQL connection must load from project settings.")
+        If SelectedMarketplace().Id <> "ATVPDKIKX0DER" Then Throw New InvalidOperationException("USA must be the default marketplace.")
+        If IsSandbox() Then Throw New InvalidOperationException("Production must be the default environment.")
+
+        Dim dbSample As New Dictionary(Of String, Object) From {
+            {"asin", "B07N4M94X4"},
+            {"dimensions", New Object() {
+                New Dictionary(Of String, Object) From {
+                    {"item", New Dictionary(Of String, Object) From {
+                        {"weight", New Dictionary(Of String, Object) From {{"value", 1.25D}, {"unit", "pounds"}}},
+                        {"height", New Dictionary(Of String, Object) From {{"value", 3D}, {"unit", "inches"}}}
+                    }}
+                }
+            }},
+            {"images", New Object() {
+                New Dictionary(Of String, Object) From {
+                    {"images", New Object() {
+                        New Dictionary(Of String, Object) From {{"variant", "MAIN"}, {"link", "https://example.com/image.jpg"}}
+                    }}
+                }
+            }},
+            {"salesRanks", New Object() {
+                New Dictionary(Of String, Object) From {
+                    {"classificationRanks", New Object() {
+                        New Dictionary(Of String, Object) From {{"classificationId", "12345"}}
+                    }}
+                }
+            }}
+        }
+        Dim mapped = InventoryDatabase.MapCatalogItem(dbSample)
+        Dim sandboxWriteBlocked As Boolean = False
+        Try
+            InventoryDatabase.Save("", mapped, True)
+        Catch ex As InvalidOperationException
+            sandboxWriteBlocked = ex.Message.Contains("Sandbox database writes are disabled")
+        End Try
+        If Not sandboxWriteBlocked Then Throw New InvalidOperationException("Sandbox writes must be rejected before opening any SQL connection.")
+        If mapped.Asin <> "B07N4M94X4" OrElse mapped.Values("Weight") <> "1.25" OrElse
+           mapped.Values("Height") <> "3" OrElse mapped.Values("ProductCatagory") <> "12345" OrElse
+           mapped.Values("ImageURL") <> "https://example.com/image.jpg" OrElse mapped.Values.ContainsKey("Width") Then
+            Throw New InvalidOperationException("Catalogue-to-database mapping failed the offline test.")
+        End If
+        If operationTree.SelectedNode Is Nothing OrElse operationTree.SelectedNode.Tag Is Nothing OrElse CStr(operationTree.SelectedNode.Tag) <> "catalog" Then
+            Throw New InvalidOperationException("Catalogue must be visibly selected on startup.")
+        End If
+        If Marketplaces.Count <> 23 Then Throw New InvalidOperationException("Marketplace list must contain 23 entries.")
+        If Marketplaces.Select(Function(m) m.Id).Distinct(StringComparer.Ordinal).Count() <> Marketplaces.Count Then Throw New InvalidOperationException("Marketplace IDs must be unique.")
+        If Operations.Select(Function(op) op.Id).Distinct(StringComparer.Ordinal).Count() <> Operations.Count Then Throw New InvalidOperationException("Operation IDs must be unique.")
+
+        cboEnvironment.SelectedIndex = 0
+        CatalogResultEnvironment = "sandbox"
+        If DatabaseEnvironmentAllowed() Then Throw New InvalidOperationException("Sandbox results must never enable database writes.")
+        cboEnvironment.SelectedIndex = 1
+        If DatabaseEnvironmentAllowed() Then Throw New InvalidOperationException("Switching to Production must not permit saving an old Sandbox result.")
+        CatalogResultEnvironment = ""
+        cboEnvironment.SelectedIndex = 0
+        For Each operation In Operations
+            SelectOperation(operation.Id)
+            If requestPanel.Controls.Count = 0 Then Throw New InvalidOperationException("No UI controls were built for " & operation.Id & ".")
+
+            If operation.Kind <> "legacy" AndAlso operation.Id <> "inventory" Then
+                LoadSandboxExample()
+                If B("confirmed") Then Throw New InvalidOperationException("Sandbox examples must not auto-confirm writes for " & operation.Id & ".")
+            End If
+        Next
+
+        SelectOperation("catalog")
+        FieldValues("catalogMode") = "identifier"
+        BuildOperationFields()
+        LoadSandboxExample()
+        If S("query") <> "B07N4M94X4" Then Throw New InvalidOperationException("Catalog Sandbox example did not remain loaded.")
+        If S("identifierType") <> "ASIN" Then Throw New InvalidOperationException("Catalog Sandbox identifier type is incorrect.")
+
+        SelectOperation("createReport")
+        FieldValues("confirmed") = True
+        BuildOperationFields()
+        Dim reportTypeControl As Control = Nothing
+        If Not FieldControls.TryGetValue("reportType", reportTypeControl) Then Throw New InvalidOperationException("Create report field was not built.")
+        DirectCast(reportTypeControl, TextBox).Text = "GET_MERCHANT_LISTINGS_ALL_DATA_TEST"
+        If B("confirmed") Then Throw New InvalidOperationException("Changing a write input must invalidate confirmation.")
+
+        FieldValues("confirmed") = True
+        BuildOperationFields()
+        Dim confirmationControl As Control = Nothing
+        If Not FieldControls.TryGetValue("confirmed", confirmationControl) Then Throw New InvalidOperationException("Write confirmation checkbox was not built.")
+        DirectCast(confirmationControl, CheckBox).Checked = True
+        InvalidateConnectionState()
+        If DirectCast(confirmationControl, CheckBox).Checked OrElse B("confirmed") Then Throw New InvalidOperationException("Credential/context changes must visibly clear write confirmation.")
+
+        SelectMarketplaceById("ATVPDKIKX0DER")
+        cboEnvironment.SelectedIndex = 0
+        If Endpoint() <> "https://sandbox.sellingpartnerapi-na.amazon.com" Then Throw New InvalidOperationException("North America Sandbox endpoint is incorrect.")
+        If CurrentApiEnvironment().Name <> "sandbox" OrElse CurrentApiEnvironment().IncludeCatalogLocale OrElse CurrentApiEnvironment().UploadFeedContent Then
+            Throw New InvalidOperationException("Sandbox API behavior is not isolated correctly.")
+        End If
+        If CurrentApiEnvironment().DocumentPath("/document") <> "/document" Then Throw New InvalidOperationException("Sandbox document request is incorrect.")
+        If SandboxApiEnvironment.Instance.Endpoint("eu") <> "https://sandbox.sellingpartnerapi-eu.amazon.com" Then Throw New InvalidOperationException("Europe Sandbox endpoint is incorrect.")
+        If SandboxApiEnvironment.Instance.Endpoint("fe") <> "https://sandbox.sellingpartnerapi-fe.amazon.com" Then Throw New InvalidOperationException("Far East Sandbox endpoint is incorrect.")
+        If SandboxApiEnvironment.Instance.TestConnectionPath <> "/sellers/v1/marketplaceParticipations" Then Throw New InvalidOperationException("Sandbox connection probe is incorrect.")
+        cboEnvironment.SelectedIndex = 1
+        If Endpoint() <> "https://sellingpartnerapi-na.amazon.com" Then Throw New InvalidOperationException("North America Production endpoint is incorrect.")
+        If CurrentApiEnvironment().Name <> "production" OrElse Not CurrentApiEnvironment().IncludeCatalogLocale OrElse Not CurrentApiEnvironment().UploadFeedContent Then
+            Throw New InvalidOperationException("Production API behavior is not isolated correctly.")
+        End If
+        If CurrentApiEnvironment().DocumentPath("/document") <> "/document?enableContentEncodingUrlHeader=true" Then Throw New InvalidOperationException("Production document request is incorrect.")
+        If ProductionApiEnvironment.Instance.Endpoint("eu") <> "https://sellingpartnerapi-eu.amazon.com" Then Throw New InvalidOperationException("Europe Production endpoint is incorrect.")
+        If ProductionApiEnvironment.Instance.Endpoint("fe") <> "https://sellingpartnerapi-fe.amazon.com" Then Throw New InvalidOperationException("Far East Production endpoint is incorrect.")
+        If ProductionApiEnvironment.Instance.TestConnectionPath <> "/sellers/v1/marketplaceParticipations" Then Throw New InvalidOperationException("Production connection probe is incorrect.")
+
+        SelectMarketplaceById("A1F83G8C2ARO7P")
+        If Endpoint() <> "https://sellingpartnerapi-eu.amazon.com" Then Throw New InvalidOperationException("Europe Production endpoint is incorrect.")
+
+        SelectMarketplaceById("A1VC38T7YXB528")
+        If Endpoint() <> "https://sellingpartnerapi-fe.amazon.com" Then Throw New InvalidOperationException("Far East Production endpoint is incorrect.")
+
+        If SafeHttpsUrl("http://example.com/file") <> "" Then Throw New InvalidOperationException("HTTP document URLs must be rejected.")
+        If SafeHttpsUrl("https://example.com/file") = "" Then Throw New InvalidOperationException("HTTPS document URLs should be accepted.")
+
+        Dim testDocuments = New Dictionary(Of String, Object) From {
+            {"documentDownloads", New Object() {
+                New Dictionary(Of String, Object) From {{"uri", "https://example.com/one.pdf"}, {"downloadType", "PDF"}},
+                New Dictionary(Of String, Object) From {{"uri", "https://example.com/two.pdf"}, {"downloadType", "ZPL"}}
+            }}
+        }
+        If FindDocumentUrls(testDocuments).Count <> 2 Then Throw New InvalidOperationException("All returned document links must remain accessible.")
+
+        If Not ValidIsoInstant("2026-09-23T10:00:00Z") Then Throw New InvalidOperationException("Valid ISO timestamp was rejected.")
+        If ValidIsoInstant("2026-09-23 10:00:00") Then Throw New InvalidOperationException("Timestamp without explicit timezone must be rejected.")
+
+        Dim csv = ParseCsvLine("""SKU,ONE"", 2, SELLER, SELLER")
+        If csv.Count <> 4 OrElse csv(0) <> "SKU,ONE" OrElse csv(1) <> "2" Then Throw New InvalidOperationException("Quoted CSV item parsing is incorrect.")
+
+        If NormalizeIncludedData(DefaultCatalogData) <> DefaultCatalogData Then Throw New InvalidOperationException("Default Catalog datasets changed unexpectedly.")
+        Dim invalidDatasetRejected As Boolean = False
+        Try
+            NormalizeIncludedData("summaries,notARealDataset")
+        Catch ex As AppException
+            invalidDatasetRejected = (ex.Code = "INVALID_CATALOG_INCLUDED_DATA")
+        End Try
+        If Not invalidDatasetRejected Then Throw New InvalidOperationException("Invalid Catalog includedData must be rejected.")
+
+        SelectOperation("catalog")
+        FieldValues("pageToken") = "STALE"
+        BuildOperationFields()
+        SelectOperation("fees")
+        If S("pageToken") <> "" Then Throw New InvalidOperationException("Changing operations must clear stale pagination tokens.")
+
+        SelectOperation("catalog")
+        Dim pagedResult As New ApiResult With {
+            .Ok = True,
+            .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"pagination", New Dictionary(Of String, Object) From {{"nextToken", "NEXT_TOKEN"}}}
+            }
+        }
+        ConfigureNextStep("catalog", pagedResult)
+        If NextOperationId <> "catalog" OrElse NextFieldKey <> "pageToken" OrElse NextFieldValue <> "NEXT_TOKEN" Then Throw New InvalidOperationException("Catalog next-page action was not prepared.")
+        OpenNextStep(Nothing, EventArgs.Empty)
+        If S("pageToken") <> "NEXT_TOKEN" Then Throw New InvalidOperationException("Catalog next-page token was not loaded into the form.")
+
+        Dim failedFeed As New ApiResult With {
+            .Ok = False,
+            .Status = 422,
+            .Data = New Dictionary(Of String, Object) From {{"resultFeedDocumentId", "result-doc"}}
+        }
+        ConfigureNextStep("feed", failedFeed)
+        If NextOperationId <> "feedDocument" OrElse NextFieldValue <> "result-doc" Then Throw New InvalidOperationException("Failed feed processing report must remain reachable.")
+
+        SelectOperation("orders")
+        Dim orderListResult As New ApiResult With {
+            .Ok = True,
+            .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"orders", New Object() {
+                    New Dictionary(Of String, Object) From {{"orderId", "ORDER-1"}},
+                    New Dictionary(Of String, Object) From {{"orderId", "ORDER-2"}}
+                }}
+            }
+        }
+        ConfigureReturnedRecords("orders", orderListResult)
+        If ReturnedRecordActions.Count <> 2 Then Throw New InvalidOperationException("Returned order selector did not expose every record.")
+        cboReturnedRecords.SelectedIndex = 1
+        OpenReturnedRecord(Nothing, EventArgs.Empty)
+        If CurrentOperation <> "order" OrElse S("orderId") <> "ORDER-2" Then Throw New InvalidOperationException("Returned order selector did not carry the selected ID forward.")
+
+        Dim tooManyValuesRejected As Boolean = False
+        Try
+            SplitValues(String.Join(",", Enumerable.Range(1, 26).Select(Function(i) "M" & i.ToString(CultureInfo.InvariantCulture))), 25)
+        Catch ex As AppException
+            tooManyValuesRejected = (ex.Code = "TOO_MANY_VALUES")
+        End Try
+        If Not tooManyValuesRejected Then Throw New InvalidOperationException("25-value marketplace limit guard is not working.")
+
+        ValidateContentType("application/json; charset=UTF-8")
+        Dim invalidContentTypeRejected As Boolean = False
+        Try
+            ValidateContentType("not a media type <>")
+        Catch ex As AppException
+            invalidContentTypeRejected = (ex.Code = "INVALID_CONTENT_TYPE")
+        End Try
+        If Not invalidContentTypeRejected Then Throw New InvalidOperationException("Invalid feed Content-Type must be rejected before an Amazon write.")
+
+        Dim catalogViewResult As New ApiResult With {
+            .Ok = True,
+            .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"items", New Object() {
+                    New Dictionary(Of String, Object) From {
+                        {"asin", "B000TEST01"},
+                        {"summaries", New Object() {
+                            New Dictionary(Of String, Object) From {
+                                {"itemName", "Test Product"},
+                                {"brand", "Test Brand"},
+                                {"marketplaceId", "ATVPDKIKX0DER"}
+                            }
+                        }},
+                        {"productTypes", New Object() {
+                            New Dictionary(Of String, Object) From {{"productType", "TEST_PRODUCT"}}
+                        }}
+                    }
+                }}
+            }
+        }
+        RenderResultView("catalog", catalogViewResult)
+        If viewGrid.Rows.Count <> 1 Then Throw New InvalidOperationException("Catalog View did not render the returned product.")
+        If viewGrid.Columns.Count < 4 Then Throw New InvalidOperationException("Catalog View is missing product columns.")
+        If Convert.ToString(viewGrid.Rows(0).Cells(1).Value, CultureInfo.InvariantCulture) <> "Test Product" Then Throw New InvalidOperationException("Catalog View did not show the product title.")
+        If catalogSectionsPanel.Controls.Count < 6 Then Throw New InvalidOperationException("Catalog View did not render the complete product page sections.")
+        If Not viewSplit.Panel1Collapsed Then Throw New InvalidOperationException("A single catalogue record must use the full product-page width.")
+        ShowResultWorkspace()
+        If Not workspaceSplit.Panel1Collapsed Then Throw New InvalidOperationException("Result page did not expand over the request editor.")
+        ShowRequestWorkspace()
+        If workspaceSplit.Panel1Collapsed Then Throw New InvalidOperationException("Edit request did not restore the request editor.")
+
+        Dim richCatalogItem As New Dictionary(Of String, Object) From {
+            {"attributes", New Dictionary(Of String, Object) From {
+                {"product_description", New Object() {New Dictionary(Of String, Object) From {{"value", "A useful <b>product</b>."}}}},
+                {"bullet_point", New Object() {New Dictionary(Of String, Object) From {{"value", "First benefit"}}}}
+            }},
+            {"images", New Object() {
+                New Dictionary(Of String, Object) From {
+                    {"images", New Object() {New Dictionary(Of String, Object) From {{"variant", "MAIN"}, {"link", "https://m.media-amazon.com/images/I/test.jpg"}}}}
+                }
+            }}
+        }
+        If Not CatalogDescription(richCatalogItem).Contains("A useful product.") OrElse Not CatalogDescription(richCatalogItem).Contains("First benefit") Then Throw New InvalidOperationException("Catalog product page did not render description and bullet attributes.")
+        If FindCatalogImageUrls(richCatalogItem).Count <> 1 Then Throw New InvalidOperationException("Catalog product page did not retain the returned HTTPS image.")
+        RenderCatalogProductSections(richCatalogItem)
+        If catalogSectionsPanel.Controls.Count < 6 Then Throw New InvalidOperationException("Catalog product sections did not render as a continuous page.")
+
+        Dim ordersViewResult As New ApiResult With {
+            .Ok = True,
+            .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"orders", New Object() {
+                    New Dictionary(Of String, Object) From {
+                        {"orderId", "ORDER-VIEW-1"},
+                        {"createdTime", "2026-09-24T10:00:00Z"},
+                        {"salesChannel", "Amazon.com"},
+                        {"fulfillment", New Dictionary(Of String, Object) From {
+                            {"fulfillmentStatus", "SHIPPED"},
+                            {"fulfilledBy", "AMAZON"}
+                        }},
+                        {"proceeds", New Dictionary(Of String, Object) From {
+                            {"grandTotal", New Dictionary(Of String, Object) From {
+                                {"currencyCode", "USD"},
+                                {"amount", "25.50"}
+                            }}
+                        }}
+                    },
+                    New Dictionary(Of String, Object) From {
+                        {"orderId", "ORDER-VIEW-2"},
+                        {"createdTime", "2026-09-24T11:00:00Z"},
+                        {"fulfillment", New Dictionary(Of String, Object) From {
+                            {"fulfillmentStatus", "UNSHIPPED"},
+                            {"fulfilledBy", "MERCHANT"}
+                        }}
+                    }
+                }}
+            }
+        }
+        RenderResultView("orders", ordersViewResult)
+        If viewGrid.Rows.Count <> 2 Then Throw New InvalidOperationException("Orders View did not render every returned order.")
+        If Convert.ToString(viewGrid.Rows(0).Cells(0).Value, CultureInfo.InvariantCulture) <> "ORDER-VIEW-1" Then Throw New InvalidOperationException("Orders View did not show the order ID.")
+        If Convert.ToString(viewGrid.Rows(0).Cells(5).Value, CultureInfo.InvariantCulture) <> "USD 25.50" Then Throw New InvalidOperationException("Orders View did not show the Orders 2026 grand total.")
+
+        Dim inventoryViewResult As New ApiResult With {
+            .Ok = True,
+            .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"payload", New Dictionary(Of String, Object) From {
+                    {"inventorySummaries", New Object() {
+                        New Dictionary(Of String, Object) From {
+                            {"productName", "Inventory Product"},
+                            {"sellerSku", "SKU-1"},
+                            {"asin", "ASIN-1"},
+                            {"totalQuantity", 10},
+                            {"inventoryDetails", New Dictionary(Of String, Object) From {
+                                {"fulfillableQuantity", 7},
+                                {"reservedQuantity", New Dictionary(Of String, Object) From {{"totalReservedQuantity", 2}}},
+                                {"unfulfillableQuantity", New Dictionary(Of String, Object) From {{"totalUnfulfillableQuantity", 1}}}
+                            }}
+                        }
+                    }}
+                }}
+            }
+        }
+        RenderResultView("inventory", inventoryViewResult)
+        If viewGrid.Rows.Count <> 1 OrElse Convert.ToString(viewGrid.Rows(0).Cells(3).Value, CultureInfo.InvariantCulture) <> "7" Then Throw New InvalidOperationException("Inventory View did not show fulfillable quantity.")
+
+        Dim prepViewResult As New ApiResult With {
+            .Ok = True,
+            .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"mskuPrepDetails", New Object() {
+                    New Dictionary(Of String, Object) From {
+                        {"msku", "MSKU-1"},
+                        {"prepCategory", "FRAGILE"},
+                        {"prepTypes", New Object() {"ITEM_BUBBLEWRAP", "ITEM_LABELING"}}
+                    }
+                }}
+            }
+        }
+        RenderResultView("prepDetails", prepViewResult)
+        If viewGrid.Rows.Count <> 1 OrElse Not Convert.ToString(viewGrid.Rows(0).Cells(2).Value, CultureInfo.InvariantCulture).Contains("Item Bubblewrap") Then Throw New InvalidOperationException("Prep View did not render prep types readably.")
+
+        Dim documentViewResult As New ApiResult With {
+            .Ok = True,
+            .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"payload", New Dictionary(Of String, Object) From {{"DownloadURL", "https://example.com/document.pdf"}}}
+            }
+        }
+        RenderResultView("billOfLading", documentViewResult)
+        If viewDetails.Rows.Count = 0 Then Throw New InvalidOperationException("Document View did not render payload download information.")
+
+        Dim singleOrderViewResult As New ApiResult With {
+            .Ok = True,
+            .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"orderId", "ORDER-SINGLE"},
+                {"createdTime", "2026-09-24T10:00:00Z"},
+                {"fulfillment", New Dictionary(Of String, Object) From {{"fulfillmentStatus", "SHIPPED"}}},
+                {"orderItems", New Object() {
+                    New Dictionary(Of String, Object) From {
+                        {"quantityOrdered", 2},
+                        {"product", New Dictionary(Of String, Object) From {
+                            {"asin", "ASIN-ITEM"},
+                            {"sellerSku", "SKU-ITEM"},
+                            {"title", "Order Item"},
+                            {"price", New Dictionary(Of String, Object) From {{"currencyCode", "USD"}, {"amount", "9.99"}}}
+                        }}
+                    }
+                }}
+            }
+        }
+        RenderResultView("order", singleOrderViewResult)
+        If viewGrid.Rows.Count <> 1 OrElse Convert.ToString(viewGrid.Rows(0).Cells(2).Value, CultureInfo.InvariantCulture) <> "Order Item" Then Throw New InvalidOperationException("Single Order View did not render order items.")
+
+        Dim viewFailure As New ApiResult With {
+            .Ok = False,
+            .Status = 403,
+            .StatusText = "Forbidden",
+            .RequestId = "request-view-test",
+            .Problem = New ApiProblem With {.Code = "Unauthorized", .Message = "Test failure", .Action = "Check permissions."}
+        }
+        RenderResultView("orders", viewFailure)
+        If Not viewSplit.Panel1Collapsed Then Throw New InvalidOperationException("Failure View should show readable details without an empty record table.")
+        If viewDetails.Rows.Count = 0 Then Throw New InvalidOperationException("Failure View did not show error details.")
+
+        ' Representative business result views: amounts, IDs, statuses and selected details.
+        Dim feesView As New ApiResult With {
+            .Ok = True, .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"payload", New Dictionary(Of String, Object) From {
+                    {"FeesEstimateResult", New Dictionary(Of String, Object) From {
+                        {"Status", "Success"},
+                        {"FeesEstimate", New Dictionary(Of String, Object) From {
+                            {"TotalFeesEstimate", New Dictionary(Of String, Object) From {{"CurrencyCode", "USD"}, {"Amount", 3.45D}}},
+                            {"FeeDetailList", New Object() {
+                                New Dictionary(Of String, Object) From {
+                                    {"FeeType", "ReferralFee"},
+                                    {"FinalFee", New Dictionary(Of String, Object) From {{"CurrencyCode", "USD"}, {"Amount", 3.45D}}}
+                                }
+                            }}
+                        }}
+                    }}
+                }}
+            }
+        }
+        RenderResultView("fees", feesView)
+        If viewGrid.Rows.Count <> 1 Then Throw New InvalidOperationException("Fees View must show individual fees.")
+        If Not lblViewSubtitle.Text.Contains("USD") Then Throw New InvalidOperationException("Fees View must show currency and total.")
+
+        Dim reportsView As New ApiResult With {
+            .Ok = True, .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"reports", New Object() {
+                    New Dictionary(Of String, Object) From {{"reportId", "REPORT-1"}, {"reportType", "GET_MERCHANT_LISTINGS_ALL_DATA"}, {"processingStatus", "DONE"}},
+                    New Dictionary(Of String, Object) From {{"reportId", "REPORT-2"}, {"processingStatus", "IN_PROGRESS"}}
+                }}
+            }
+        }
+        RenderResultView("reports", reportsView)
+        If viewGrid.Rows.Count <> 2 Then Throw New InvalidOperationException("Reports View lost a returned report.")
+        If Convert.ToString(viewGrid.Rows(0).Cells(0).Value, CultureInfo.InvariantCulture) <> "REPORT-1" Then Throw New InvalidOperationException("Reports View must show the report ID.")
+
+        Dim feedsView As New ApiResult With {
+            .Ok = True, .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"feeds", New Object() {
+                    New Dictionary(Of String, Object) From {{"feedId", "FEED-1"}, {"feedType", "JSON_LISTINGS_FEED"}, {"processingStatus", "DONE"}, {"resultFeedDocumentId", "DOCUMENT-1"}}
+                }}
+            }
+        }
+        RenderResultView("feeds", feedsView)
+        If viewGrid.Rows.Count <> 1 Then Throw New InvalidOperationException("Feeds View lost a returned feed.")
+        If Convert.ToString(viewGrid.Rows(0).Cells(4).Value, CultureInfo.InvariantCulture) <> "DOCUMENT-1" Then Throw New InvalidOperationException("Feeds View must show the processing document ID.")
+
+        Dim plansView As New ApiResult With {
+            .Ok = True, .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"inboundPlans", New Object() {
+                    New Dictionary(Of String, Object) From {{"inboundPlanId", "PLAN-1"}, {"name", "Test Plan"}, {"status", "ACTIVE"}}
+                }}
+            }
+        }
+        RenderResultView("inboundPlans", plansView)
+        If viewGrid.Rows.Count <> 1 Then Throw New InvalidOperationException("Inbound View lost the plan.")
+        If Convert.ToString(viewGrid.Rows(0).Cells(0).Value, CultureInfo.InvariantCulture) <> "PLAN-1" Then Throw New InvalidOperationException("Inbound View must show the plan ID.")
+
+        ' Exercise every SP-API view without any real Amazon account in CI.
+        For Each operation In Operations
+            If operation.Kind = "legacy" Then Continue For
+            Dim emptyResult As New ApiResult With {
+                .Ok = True, .Status = 200,
+                .Data = New Dictionary(Of String, Object)()
+            }
+            RenderResultView(operation.Id, emptyResult)
+            If String.IsNullOrWhiteSpace(lblViewTitle.Text) Then
+                Throw New InvalidOperationException("Result View has no heading for " & operation.Id)
+            End If
+        Next
+
+        CachedAccessToken = "test-token"
+        CachedAccessTokenExpiresUtc = DateTimeOffset.UtcNow.AddMinutes(10)
+        InvalidateConnectionState()
+        If CachedAccessToken <> "" Then Throw New InvalidOperationException("Credential/context changes must clear the cached access token.")
+
+        cboEnvironment.SelectedIndex = 0
+        SelectMarketplaceById("ATVPDKIKX0DER")
+        SelectOperation("catalog")
     End Sub
     #End Region
 

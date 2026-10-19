@@ -156,7 +156,7 @@ Friend NotInheritable Class InventoryDatabase
                     If reader IsNot Nothing Then reader.Read()
                 End Using
             End Using
-            Return "Connected to SQL Server. InventoryDimensions has all eight expected columns and can be read. No records were changed."
+            Return "Connected. The required columns are available."
         End Using
     End Function
 
@@ -225,6 +225,7 @@ Friend NotInheritable Class InventoryDatabase
     #End Region
 
     #Region "03 - Preview and confirmed SQL Server insert/update"
+    #Region "Preview: show changes without writing"
     Friend Shared Function Preview(connectionString As String, product As ProductRecord) As String
         ValidateProduct(product)
         Using connection = OpenConnection(connectionString)
@@ -234,12 +235,12 @@ Friend NotInheritable Class InventoryDatabase
             output.AppendLine("Database: SQL Server")
             output.AppendLine("Table: InventoryDimensions")
             output.AppendLine("ASIN: " & product.Asin)
-            output.AppendLine("Action: " & If(current Is Nothing, "INSERT", "UPDATE"))
+            output.AppendLine("Action: " & If(current Is Nothing, "Add product", "Update product"))
             output.AppendLine()
             For Each field In ProductFields
                 Dim newValue As String = Nothing
                 If Not product.Values.TryGetValue(field, newValue) Then
-                    output.AppendLine(field & ": not returned by Amazon (preserve existing data)")
+                    output.AppendLine(field & ": unchanged (not supplied by Amazon)")
                 Else
                     Dim oldValue = If(current Is Nothing, "(new)", TextValue(current(field)))
                     Dim unit As String = Nothing
@@ -249,7 +250,7 @@ Friend NotInheritable Class InventoryDatabase
             Next
             output.AppendLine("LastUpdated: set on successful save")
             output.AppendLine()
-            output.AppendLine("IMPORTANT: Amazon measurements have not been converted between units. Confirm what the existing database expects.")
+            output.AppendLine("Measurements use the units shown above. Check that these match your database.")
             For Each note In product.Notes
                 output.AppendLine(note)
             Next
@@ -257,6 +258,9 @@ Friend NotInheritable Class InventoryDatabase
         End Using
     End Function
 
+    #End Region
+
+    #Region "Save: validate, write, verify, commit"
     Friend Shared Function Save(connectionString As String, product As ProductRecord, Optional sandbox As Boolean = False) As String
         If sandbox Then
             Throw New InvalidOperationException("Sandbox database writes are disabled. Fetch a Production catalogue result before saving.")
@@ -284,15 +288,8 @@ Friend NotInheritable Class InventoryDatabase
                     fieldsToSave.Add("LastUpdated")
                     values.Add(TypedValue("LastUpdated", DateTime.Now, columns))
 
-                    Dim sql As String
-                    If inserting Then
-                        sql = "INSERT INTO [InventoryDimensions] (" &
-                              String.Join(", ", fieldsToSave.Select(Function(field) "[" & field & "]")) &
-                              ") VALUES (" & String.Join(", ", fieldsToSave.Select(Function(field, index) "@p" & index.ToString(CultureInfo.InvariantCulture))) & ")"
-                    Else
-                        sql = "UPDATE [InventoryDimensions] SET " &
-                              String.Join(", ", fieldsToSave.Select(Function(field, index) "[" & field & "] = @p" & index.ToString(CultureInfo.InvariantCulture))) &
-                              " WHERE [Asin] = @p" & fieldsToSave.Count.ToString(CultureInfo.InvariantCulture)
+                    Dim sql = BuildSaveSql(fieldsToSave, inserting)
+                    If Not inserting Then
                         values.Add(TypedValue("Asin", product.Asin, columns))
                     End If
                     Using command As New SqlCommand(sql, connection, transaction)
@@ -304,13 +301,7 @@ Friend NotInheritable Class InventoryDatabase
                     End Using
 
                     Dim saved = ReadExisting(connection, product.Asin, transaction)
-                    If saved Is Nothing Then Throw New InvalidOperationException("Could not verify the saved InventoryDimensions record.")
-                    For index As Integer = 0 To fieldsToSave.Count - 1
-                        Dim field = fieldsToSave(index)
-                        If Not ExpectedMatches(saved(field), values(index), columns(field)) Then
-                            Throw New InvalidOperationException("The stored " & field & " did not match the intended value. The change was rolled back.")
-                        End If
-                    Next
+                    VerifySavedValues(saved, fieldsToSave, values, columns)
                     transaction.Commit()
 
                     Dim result As New System.Text.StringBuilder()
@@ -331,6 +322,30 @@ Friend NotInheritable Class InventoryDatabase
             End Using
         End Using
     End Function
+
+    #End Region
+
+    #Region "SQL construction, read-back checks and value conversion"
+    Private Shared Function BuildSaveSql(fields As List(Of String), inserting As Boolean) As String
+        If inserting Then
+            Dim columnNames = String.Join(", ", fields.Select(Function(field) "[" & field & "]"))
+            Dim parameters = String.Join(", ", fields.Select(Function(field, index) "@p" & index.ToString(CultureInfo.InvariantCulture)))
+            Return "INSERT INTO [InventoryDimensions] (" & columnNames & ") VALUES (" & parameters & ")"
+        End If
+
+        Dim assignments = String.Join(", ", fields.Select(Function(field, index) "[" & field & "] = @p" & index.ToString(CultureInfo.InvariantCulture)))
+        Return "UPDATE [InventoryDimensions] SET " & assignments & " WHERE [Asin] = @p" & fields.Count.ToString(CultureInfo.InvariantCulture)
+    End Function
+
+    Private Shared Sub VerifySavedValues(saved As Dictionary(Of String, Object), fields As List(Of String), values As List(Of Object), columns As Dictionary(Of String, Type))
+        If saved Is Nothing Then Throw New InvalidOperationException("Could not verify the saved InventoryDimensions record.")
+        For index As Integer = 0 To fields.Count - 1
+            Dim field = fields(index)
+            If Not ExpectedMatches(saved(field), values(index), columns(field)) Then
+                Throw New InvalidOperationException("The stored " & field & " did not match the intended value. The change was rolled back.")
+            End If
+        Next
+    End Sub
 
     Private Shared Function ExpectedMatches(actual As Object, expected As Object, fieldType As Type) As Boolean
         If actual Is Nothing Then Return expected Is Nothing
@@ -365,6 +380,8 @@ Friend NotInheritable Class InventoryDatabase
         If fieldType Is GetType(Short) Then Return Short.Parse(Convert.ToString(value, CultureInfo.InvariantCulture), CultureInfo.InvariantCulture)
         Throw New InvalidOperationException(field & " is stored as unsupported SQL Server data type " & fieldType.Name & ". No values were changed.")
     End Function
+    #End Region
+
     #End Region
 
     #Region "04 - Disposable SQL Server integration test (CI only)"
@@ -437,7 +454,7 @@ Friend NotInheritable Class InventoryDatabase
             }
             Dim product = MapCatalogItem(catalog)
             Dim previewText = Preview(connectionString, product)
-            If Not previewText.Contains("Action: INSERT") Then Throw New InvalidOperationException("New ASIN did not preview an INSERT.")
+            If Not previewText.Contains("Action: Add product") Then Throw New InvalidOperationException("New ASIN did not preview an INSERT.")
             If Not Save(connectionString, product).Contains("Inserted") Then Throw New InvalidOperationException("INSERT did not complete.")
 
             Using connection As New SqlConnection(connectionString)
@@ -456,7 +473,7 @@ Friend NotInheritable Class InventoryDatabase
             Dim updateOnly As New ProductRecord With {.Asin = "B07N4M94X4"}
             updateOnly.Values("Weight") = "2.5"
             updateOnly.Values("ImageURL") = "https://example.com/O'Brien-image.jpg"
-            If Not Preview(connectionString, updateOnly).Contains("Action: UPDATE") Then
+            If Not Preview(connectionString, updateOnly).Contains("Action: Update product") Then
                 Throw New InvalidOperationException("Existing ASIN did not preview an UPDATE.")
             End If
             If Not Save(connectionString, updateOnly).Contains("Updated") Then Throw New InvalidOperationException("UPDATE failed.")

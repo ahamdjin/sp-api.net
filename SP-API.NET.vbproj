@@ -50,6 +50,8 @@
   <ItemGroup>
     <Compile Include="MainForm.vb" />
     <Compile Include="ApiRequests.vb" />
+    <Compile Include="ProductionApi.vb" />
+    <Compile Include="SandboxApi.vb" />
     <Compile Include="Database.vb" />
     <Compile Include="My Project\Settings.Designer.vb">
       <AutoGen>True</AutoGen>
