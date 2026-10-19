@@ -305,7 +305,7 @@ Friend NotInheritable Class InventoryDatabase
             For Each product In products
                 Dim asin = If(product Is Nothing, "", If(product.Asin, "").Trim().ToUpperInvariant())
                 Dim detail As String
-                If asin <> "" AndAlso Not seen.Add(asin) Then
+                If asin <> "" AndAlso seen.Contains(asin) Then
                     summary.Skipped += 1
                     detail = asin & " | Skipped: duplicate ASIN in these catalogue results"
                 Else
@@ -313,6 +313,7 @@ Friend NotInheritable Class InventoryDatabase
                         ValidateProduct(product)
                         Dim operation As String = ""
                         SaveWithConnection(connection, columns, product, operation)
+                        seen.Add(asin)
                         If operation = "Inserted" Then
                             summary.Inserted += 1
                         Else
