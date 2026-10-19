@@ -605,7 +605,10 @@ Friend NotInheritable Class InventoryDatabase
 
             ' Mixed bulk batch: an invalid record rolls back, a subsequent record
             ' inserts, an existing record updates and a repeated ASIN is skipped.
-            Dim badBatch As New ProductRecord With {.Asin = "B07N4M94X4"}
+            Dim failureBaseline As New ProductRecord With {.Asin = "B07N4M94X6"}
+            failureBaseline.Values("Weight") = "7"
+            Save(connectionString, failureBaseline)
+            Dim badBatch As New ProductRecord With {.Asin = "B07N4M94X6"}
             badBatch.Values("Weight") = "999"
             badBatch.Values("ImageURL") = New String("X"c, 1050)
             Dim newBatch As New ProductRecord With {.Asin = "B07N4M94X5"}
@@ -635,7 +638,9 @@ Friend NotInheritable Class InventoryDatabase
                 connection.Open()
                 Dim existingBulk = ReadExisting(connection, "B07N4M94X4")
                 Dim insertedBulk = ReadExisting(connection, "B07N4M94X5")
-                If existingBulk Is Nothing OrElse insertedBulk Is Nothing OrElse
+                Dim rolledBackBulk = ReadExisting(connection, "B07N4M94X6")
+                If existingBulk Is Nothing OrElse insertedBulk Is Nothing OrElse rolledBackBulk Is Nothing OrElse
+                   Convert.ToDecimal(rolledBackBulk("Weight"), CultureInfo.InvariantCulture) <> 7D OrElse
                    Convert.ToDecimal(existingBulk("Weight"), CultureInfo.InvariantCulture) <> 3.75D OrElse
                    Convert.ToDecimal(existingBulk("Height"), CultureInfo.InvariantCulture) <> 3D OrElse
                    Convert.ToDecimal(insertedBulk("Weight"), CultureInfo.InvariantCulture) <> 1.1D Then
