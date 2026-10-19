@@ -190,6 +190,7 @@ Public Partial Class MainForm
     Private ReadOnly txtSqlConnection As New TextBox()
     Private ReadOnly btnTestDatabase As New Button()
     Private ReadOnly btnSaveDatabase As New Button()
+    Private ReadOnly btnBulkSaveDatabase As New Button()
     Private ReadOnly lblDatabaseStatus As New Label()
     Private ReadOnly databaseTab As New TabPage("Database")
     Private ReadOnly txtDatabaseDetails As New TextBox()
@@ -786,6 +787,13 @@ Public Partial Class MainForm
         btnSaveDatabase.Enabled = False
         AddHandler btnSaveDatabase.Click, Async Sub(sender, e) Await PreviewAndSaveDatabaseAsync()
         viewActions.Controls.Add(btnSaveDatabase)
+
+        btnBulkSaveDatabase.Text = "Update All in database"
+        btnBulkSaveDatabase.AutoSize = True
+        btnBulkSaveDatabase.Visible = False
+        btnBulkSaveDatabase.Enabled = False
+        AddHandler btnBulkSaveDatabase.Click, Async Sub(sender, e) Await BulkSaveDatabaseAsync()
+        viewActions.Controls.Add(btnBulkSaveDatabase)
 
         layout.Controls.Add(viewActions, 0, 3)
     End Sub
@@ -1680,7 +1688,7 @@ Public Partial Class MainForm
 
     #Region "08 - Authentication checks and request execution"
     Private Async Function TestConnectionAsync(Optional automatic As Boolean = False) As Task
-        If RequestBusy Then Return
+        If RequestBusy OrElse DatabaseBusy Then Return
         connectionTimer.Stop()
         ConnectionVerified = False
         credentialErrors.SetError(txtClientId, If(txtClientId.Text.Trim() = "", "Enter the Client ID.", ""))
@@ -1721,7 +1729,7 @@ Public Partial Class MainForm
             MessageBox.Show("This legacy SQL Server utility is not yet connected; only the InventoryDimensions catalogue update has been implemented.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information)
             Return
         End If
-        If Not ConnectionVerified OrElse Not CredentialsReady() OrElse RequestBusy Then
+        If Not ConnectionVerified OrElse Not CredentialsReady() OrElse RequestBusy OrElse DatabaseBusy Then
             SetConnectionStatus("Connect before running a request", Color.DimGray, Color.FromArgb(248, 250, 252))
             Return
         End If
@@ -1767,7 +1775,7 @@ Public Partial Class MainForm
 
     Private Sub ToggleBusy(busy As Boolean, message As String)
         RequestBusy = busy
-        btnRun.Enabled = Not busy AndAlso ConnectionVerified AndAlso Operations.First(Function(x) x.Id = CurrentOperation).Kind <> "legacy"
+        btnRun.Enabled = Not busy AndAlso Not DatabaseBusy AndAlso ConnectionVerified AndAlso Operations.First(Function(x) x.Id = CurrentOperation).Kind <> "legacy"
         btnTest.Enabled = Not busy
         operationTree.Enabled = Not busy
         requestPanel.Enabled = Not busy
@@ -3330,14 +3338,154 @@ Public Partial Class MainForm
         Return Not IsSandbox() AndAlso CatalogResultEnvironment = "production"
     End Function
 
+    Private Function CatalogItemsForBulkSave() As List(Of Dictionary(Of String, Object))
+        If CurrentViewOperation <> "catalog" OrElse LastResult Is Nothing OrElse Not LastResult.Ok OrElse
+           CatalogResultEnvironment <> EnvironmentName() OrElse Not DatabaseEnvironmentAllowed() Then
+            Return New List(Of Dictionary(Of String, Object))()
+        End If
+        Return ListValue(GetValue(AsDict(LastResult.Data), "items")).
+            Select(Function(item) AsDict(item)).ToList()
+    End Function
+
+    Private Sub SetDatabaseBusy(busy As Boolean)
+        DatabaseBusy = busy
+        txtSqlConnection.Enabled = Not busy
+        txtClientId.Enabled = Not busy AndAlso Not RequestBusy
+        txtClientSecret.Enabled = Not busy AndAlso Not RequestBusy
+        txtRefreshToken.Enabled = Not busy AndAlso Not RequestBusy
+        cboEnvironment.Enabled = Not busy AndAlso Not RequestBusy
+        cboMarketplace.Enabled = Not busy AndAlso Not RequestBusy
+        operationTree.Enabled = Not busy AndAlso Not RequestBusy
+        btnRun.Enabled = Not busy AndAlso Not RequestBusy AndAlso ConnectionVerified AndAlso
+                         Operations.First(Function(op) op.Id = CurrentOperation).Kind <> "legacy"
+        UpdateDatabaseControls()
+    End Sub
+
+    Private Async Function BulkSaveDatabaseAsync() As Task
+        If DatabaseBusy Then Return
+        If Not ConnectionVerified OrElse RequestBusy OrElse Not DatabaseVerified OrElse Not DatabaseEnvironmentAllowed() Then
+            txtDatabaseDetails.Text = "A verified SQL Server connection and fresh Production catalogue results are required. Sandbox saves are disabled."
+            tabs.SelectedTab = databaseTab
+            Return
+        End If
+
+        Dim records = CatalogItemsForBulkSave()
+        If records.Count = 0 Then Return
+        Dim connectionString = txtSqlConnection.Text
+        Dim target As New System.Data.SqlClient.SqlConnectionStringBuilder(connectionString)
+        Dim products As New List(Of InventoryDatabase.ProductRecord)()
+        For Each item In records
+            Try
+                products.Add(InventoryDatabase.MapCatalogItem(item))
+            Catch
+                products.Add(New InventoryDatabase.ProductRecord With {.Asin = StringValue(GetValue(item, "asin"))})
+            End Try
+        Next
+
+        txtDatabaseDetails.Text = "Bulk update preview" & Environment.NewLine &
+            "Server: " & target.DataSource & Environment.NewLine &
+            "Database: " & target.InitialCatalog & Environment.NewLine &
+            "Table: InventoryDimensions" & Environment.NewLine &
+            "Environment: Production" & Environment.NewLine &
+            "Returned catalogue rows: " & products.Count.ToString(CultureInfo.InvariantCulture) & Environment.NewLine &
+            "Each unique ASIN will be inserted or updated individually. Failed rows will be reported without undoing successful rows." &
+            Environment.NewLine & Environment.NewLine &
+            "Measurements are saved in the units returned by Amazon. Verify their compatibility with this SQL table."
+        tabs.SelectedTab = databaseTab
+
+        ' The only popup in the bulk-update workflow. All subsequent progress and
+        ' errors are shown in the Database tab rather than per-product dialogs.
+        Dim confirmed = MessageBox.Show(
+            "Update all " & products.Count.ToString(CultureInfo.InvariantCulture) &
+            " returned catalogue rows in SQL Server database " & target.InitialCatalog & "?" & Environment.NewLine &
+            "A result for every ASIN will be displayed in the Database tab." & Environment.NewLine &
+            "Amazon units and category IDs are saved as returned, without legacy conversion." & Environment.NewLine &
+            "Use a backup/test database for the first real write.",
+            "Confirm bulk database update",
+            MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2)
+        If confirmed <> DialogResult.Yes Then Return
+
+        If Not ConnectionVerified OrElse Not DatabaseVerified OrElse Not DatabaseEnvironmentAllowed() OrElse
+           CatalogItemsForBulkSave().Count <> records.Count OrElse
+           Not String.Equals(connectionString, txtSqlConnection.Text, StringComparison.Ordinal) Then
+            txtDatabaseDetails.Text = "The catalogue or database context changed. No bulk update was started."
+            Return
+        End If
+
+        SetDatabaseBusy(True)
+        SetDatabaseStatus("Updating 0/" & products.Count.ToString(CultureInfo.InvariantCulture), Color.FromArgb(30, 64, 175))
+        Dim resultLines As New System.Text.StringBuilder()
+        resultLines.AppendLine("Bulk database update")
+        resultLines.AppendLine("Server: " & target.DataSource & " | Database: " & target.InitialCatalog)
+        resultLines.AppendLine("Total catalogue rows: " & products.Count.ToString(CultureInfo.InvariantCulture))
+        resultLines.AppendLine()
+        txtDatabaseDetails.Text = resultLines.ToString()
+        Try
+            Dim progress As IProgress(Of InventoryDatabase.BulkProgress) =
+                New Progress(Of InventoryDatabase.BulkProgress)(
+                    Sub(state)
+                        If Not DatabaseBusy Then Return
+                        resultLines.AppendLine(state.Line)
+                        txtDatabaseDetails.Text = "Processing " & state.Completed.ToString(CultureInfo.InvariantCulture) &
+                            "/" & state.Total.ToString(CultureInfo.InvariantCulture) & Environment.NewLine &
+                            "Inserted: " & state.Inserted.ToString(CultureInfo.InvariantCulture) &
+                            " | Updated: " & state.Updated.ToString(CultureInfo.InvariantCulture) &
+                            " | Failed: " & state.Failed.ToString(CultureInfo.InvariantCulture) &
+                            " | Skipped: " & state.Skipped.ToString(CultureInfo.InvariantCulture) &
+                            Environment.NewLine & Environment.NewLine & resultLines.ToString()
+                        SetDatabaseStatus("Updating " & state.Completed.ToString(CultureInfo.InvariantCulture) &
+                            "/" & state.Total.ToString(CultureInfo.InvariantCulture), Color.FromArgb(30, 64, 175))
+                    End Sub)
+            Dim result = Await Task.Run(Function() InventoryDatabase.SaveBulk(connectionString, products, False, progress))
+            Dim finalText As New System.Text.StringBuilder()
+            finalText.AppendLine("Bulk database update completed")
+            finalText.AppendLine("Server: " & target.DataSource & " | Database: " & target.InitialCatalog)
+            finalText.AppendLine("Total: " & result.Total.ToString(CultureInfo.InvariantCulture) &
+                                 " | Inserted: " & result.Inserted.ToString(CultureInfo.InvariantCulture) &
+                                 " | Updated: " & result.Updated.ToString(CultureInfo.InvariantCulture) &
+                                 " | Failed: " & result.Failed.ToString(CultureInfo.InvariantCulture) &
+                                 " | Skipped: " & result.Skipped.ToString(CultureInfo.InvariantCulture))
+            finalText.AppendLine()
+            finalText.AppendLine("ASIN-by-ASIN results:")
+            For Each line In result.Lines
+                finalText.AppendLine(line)
+            Next
+            txtDatabaseDetails.Text = finalText.ToString()
+            SetDatabaseStatus(If(result.Failed > 0, "Completed with failures", "Bulk update completed"),
+                              If(result.Failed > 0, Color.DarkOrange, Color.FromArgb(22, 101, 52)))
+        Catch ex As Exception
+            SetDatabaseStatus("Bulk update failed", Color.Firebrick)
+            txtDatabaseDetails.Text = "Bulk operation could not continue." & Environment.NewLine &
+                DatabaseErrorMessage(ex) & Environment.NewLine &
+                "Some ASINs may already have been saved. Review the database before retrying."
+        Finally
+            SetDatabaseBusy(False)
+            tabs.SelectedTab = databaseTab
+        End Try
+    End Function
+
     Private Sub UpdateDatabaseControls()
         btnTestDatabase.Enabled = Not DatabaseBusy AndAlso Not String.IsNullOrWhiteSpace(txtSqlConnection.Text)
-        btnSaveDatabase.Visible = CurrentViewOperation = "catalog" AndAlso LastResult IsNot Nothing AndAlso LastResult.Ok
-        btnSaveDatabase.Enabled = ConnectionVerified AndAlso Not RequestBusy AndAlso Not DatabaseBusy AndAlso DatabaseVerified AndAlso btnSaveDatabase.Visible AndAlso
-                                  SelectedCatalogItemForDatabase() IsNot Nothing
-        If btnSaveDatabase.Visible Then
-            btnSaveDatabase.Text = If(DatabaseBusy, "Working...", "Save to database")
+        Dim showCatalog = CurrentViewOperation = "catalog" AndAlso LastResult IsNot Nothing AndAlso LastResult.Ok
+        Dim productCount = If(showCatalog,
+                              ListValue(GetValue(AsDict(LastResult.Data), "items")).Count, 0)
+        Dim canSave = ConnectionVerified AndAlso Not RequestBusy AndAlso Not DatabaseBusy AndAlso
+                      DatabaseVerified AndAlso DatabaseEnvironmentAllowed()
+
+        ' Use the logical catalogue state, not Control.Visible (which is False
+        ' when its parent tab is currently hidden).
+        btnSaveDatabase.Visible = showCatalog
+        btnSaveDatabase.Enabled = canSave AndAlso showCatalog AndAlso SelectedCatalogItemForDatabase() IsNot Nothing
+        btnBulkSaveDatabase.Visible = showCatalog AndAlso productCount > 1
+        btnBulkSaveDatabase.Enabled = canSave AndAlso showCatalog AndAlso productCount > 1
+        If showCatalog Then
+            btnSaveDatabase.Text = If(DatabaseBusy, "Working...", "Save selected ASIN")
             appTooltips.SetToolTip(btnSaveDatabase, If(IsSandbox(), "Database saves are unavailable in Sandbox. Fetch a Production catalogue result to save.", "Review and save the selected ASIN. Details appear in the Database tab."))
+        End If
+        If showCatalog AndAlso productCount > 1 Then
+            btnBulkSaveDatabase.Text = If(DatabaseBusy, "Updating...", "Update All (" &
+                productCount.ToString(CultureInfo.InvariantCulture) & ")")
+            appTooltips.SetToolTip(btnBulkSaveDatabase, "Insert or update every returned catalogue ASIN in SQL Server. Progress and results appear in the Database tab.")
         End If
     End Sub
 
@@ -3353,8 +3501,7 @@ Public Partial Class MainForm
         Dim product = InventoryDatabase.MapCatalogItem(selectedItem)
         Dim connectionString = txtSqlConnection.Text
         Dim sandboxSave = IsSandbox()
-        DatabaseBusy = True
-        UpdateDatabaseControls()
+        SetDatabaseBusy(True)
         Try
             Dim preview = Await Task.Run(Function() InventoryDatabase.Preview(connectionString, product))
             If Not ConnectionVerified OrElse Not DatabaseVerified OrElse Not DatabaseEnvironmentAllowed() OrElse SelectedCatalogItemForDatabase() Is Nothing OrElse
@@ -3378,8 +3525,7 @@ Public Partial Class MainForm
             txtDatabaseDetails.Text = "Save could not be confirmed" & Environment.NewLine & Environment.NewLine & DatabaseErrorMessage(ex)
             tabs.SelectedTab = databaseTab
         Finally
-            DatabaseBusy = False
-            UpdateDatabaseControls()
+            SetDatabaseBusy(False)
         End Try
     End Function
 
@@ -3865,7 +4011,9 @@ Public Partial Class MainForm
         End If
         txtClientId.Text = originalClientId
         If CurrentOperation <> "catalog" Then Throw New InvalidOperationException("Catalogue must be the initial active workflow.")
-        If btnSaveDatabase.Enabled OrElse DatabaseVerified Then Throw New InvalidOperationException("SQL Server save must not be active until the connection has been tested.")
+        If btnSaveDatabase.Enabled OrElse btnBulkSaveDatabase.Enabled OrElse DatabaseVerified Then
+            Throw New InvalidOperationException("Single and bulk database saves must be disabled until a SQL connection has been verified.")
+        End If
         If txtSqlConnection.Text <> My.Settings.FTSSQL Then Throw New InvalidOperationException("The SQL connection must load from project settings.")
         If SelectedMarketplace().Id <> "ATVPDKIKX0DER" Then Throw New InvalidOperationException("USA must be the default marketplace.")
         If IsSandbox() Then Throw New InvalidOperationException("Production must be the default environment.")
@@ -3903,6 +4051,51 @@ Public Partial Class MainForm
             sandboxWriteBlocked = ex.Message.Contains("Sandbox database writes are disabled")
         End Try
         If Not sandboxWriteBlocked Then Throw New InvalidOperationException("Sandbox writes must be rejected before opening any SQL connection.")
+        sandboxWriteBlocked = False
+        Try
+            InventoryDatabase.SaveBulk("", New List(Of InventoryDatabase.ProductRecord) From {mapped}, True)
+        Catch ex As InvalidOperationException
+            sandboxWriteBlocked = ex.Message.Contains("Sandbox database writes are disabled")
+        End Try
+        If Not sandboxWriteBlocked Then Throw New InvalidOperationException("Bulk saves must refuse Sandbox before opening SQL.")
+        ' Changing tabs must never hide the Update All action for a valid
+        ' multi-row Production catalogue result.
+        Dim oldResult = LastResult
+        Dim oldViewOperation = CurrentViewOperation
+        Dim oldOrigin = CatalogResultEnvironment
+        Dim oldVerified = DatabaseVerified
+        Dim oldAmazonVerified = ConnectionVerified
+        LastResult = New ApiResult With {
+            .Ok = True, .Status = 200,
+            .Data = New Dictionary(Of String, Object) From {
+                {"items", New Object() {
+                    New Dictionary(Of String, Object) From {{"asin", "B07N4M94X4"}},
+                    New Dictionary(Of String, Object) From {{"asin", "B07N4M94X5"}}
+                }}
+            }
+        }
+        CurrentViewOperation = "catalog"
+        CatalogResultEnvironment = "production"
+        cboEnvironment.SelectedIndex = 1
+        DatabaseVerified = True
+        ConnectionVerified = True
+        tabs.SelectedTab = databaseTab
+        UpdateDatabaseControls()
+        If Not btnBulkSaveDatabase.Enabled OrElse Not btnBulkSaveDatabase.Text.Contains("(2)") Then
+            Throw New InvalidOperationException("Update All must remain available for Production catalogue results even with Database tab selected.")
+        End If
+        cboEnvironment.SelectedIndex = 0
+        If btnBulkSaveDatabase.Enabled Then
+            Throw New InvalidOperationException("Update All must be disabled in Sandbox.")
+        End If
+        LastResult = oldResult
+        CurrentViewOperation = oldViewOperation
+        CatalogResultEnvironment = oldOrigin
+        DatabaseVerified = oldVerified
+        ConnectionVerified = oldAmazonVerified
+        tabs.SelectedTab = tabs.TabPages(0)
+        UpdateDatabaseControls()
+
         If mapped.Asin <> "B07N4M94X4" OrElse mapped.Values("Weight") <> "1.25" OrElse
            mapped.Values("Height") <> "3" OrElse mapped.Values("ProductCatagory") <> "12345" OrElse
            mapped.Values("ImageURL") <> "https://example.com/image.jpg" OrElse mapped.Values.ContainsKey("Width") Then

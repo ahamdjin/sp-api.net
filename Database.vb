@@ -261,65 +261,136 @@ Friend NotInheritable Class InventoryDatabase
     #End Region
 
     #Region "Save: validate, write, verify, commit"
+
+    Friend NotInheritable Class BulkProgress
+        Public Property Completed As Integer
+        Public Property Total As Integer
+        Public Property Inserted As Integer
+        Public Property Updated As Integer
+        Public Property Failed As Integer
+        Public Property Skipped As Integer
+        Public Property Line As String = ""
+    End Class
+
+    Friend NotInheritable Class BulkSaveResult
+        Public Property Total As Integer
+        Public Property Inserted As Integer
+        Public Property Updated As Integer
+        Public Property Failed As Integer
+        Public Property Skipped As Integer
+        Public ReadOnly Lines As New List(Of String)()
+    End Class
+
     Friend Shared Function Save(connectionString As String, product As ProductRecord, Optional sandbox As Boolean = False) As String
-        If sandbox Then
-            Throw New InvalidOperationException("Sandbox database writes are disabled. Fetch a Production catalogue result before saving.")
-        End If
+        If sandbox Then Throw New InvalidOperationException("Sandbox database writes are disabled. Fetch a Production catalogue result before saving.")
         ValidateProduct(product)
         Using connection = OpenConnection(connectionString)
             Dim columns = ReadColumns(connection)
-            Using transaction = connection.BeginTransaction(IsolationLevel.ReadCommitted)
-                Try
-                    Dim current = ReadExisting(connection, product.Asin, transaction)
-                    Dim inserting = current Is Nothing
-                    Dim fieldsToSave As New List(Of String)()
-                    Dim values As New List(Of Object)()
-                    If inserting Then
-                        fieldsToSave.Add("Asin")
-                        values.Add(TypedValue("Asin", product.Asin, columns))
-                    End If
-                    For Each field In ProductFields
-                        Dim newValue As String = Nothing
-                        If product.Values.TryGetValue(field, newValue) Then
-                            fieldsToSave.Add(field)
-                            values.Add(TypedValue(field, newValue, columns))
-                        End If
-                    Next
-                    fieldsToSave.Add("LastUpdated")
-                    values.Add(TypedValue("LastUpdated", DateTime.Now, columns))
+            Dim operation As String = ""
+            Return SaveWithConnection(connection, columns, product, operation)
+        End Using
+    End Function
 
-                    Dim sql = BuildSaveSql(fieldsToSave, inserting)
-                    If Not inserting Then
-                        values.Add(TypedValue("Asin", product.Asin, columns))
-                    End If
-                    Using command As New SqlCommand(sql, connection, transaction)
-                        For index As Integer = 0 To values.Count - 1
-                            command.Parameters.AddWithValue("@p" & index.ToString(CultureInfo.InvariantCulture), values(index))
-                        Next
-                        Dim affected = command.ExecuteNonQuery()
-                        If affected <> 1 Then Throw New InvalidOperationException("The expected update count was 1, but SQL Server reported " & affected.ToString(CultureInfo.InvariantCulture) & ".")
-                    End Using
-
-                    Dim saved = ReadExisting(connection, product.Asin, transaction)
-                    VerifySavedValues(saved, fieldsToSave, values, columns)
-                    transaction.Commit()
-
-                    Dim result As New System.Text.StringBuilder()
-                    result.AppendLine(If(inserting, "Inserted ", "Updated ") & product.Asin & " in InventoryDimensions.")
-                    result.AppendLine("Saved values verified:")
-                    For Each field In fieldsToSave
-                        result.AppendLine(field & ": " & TextValue(saved(field)))
-                    Next
-                    Return result.ToString()
-                Catch
+    ' One connection/schema validation for the batch; each ASIN is an independent verified
+    ' transaction so an invalid product does not roll back the other successful products.
+    Friend Shared Function SaveBulk(connectionString As String, products As IList(Of ProductRecord),
+                                   Optional sandbox As Boolean = False,
+                                   Optional progress As IProgress(Of BulkProgress) = Nothing) As BulkSaveResult
+        If sandbox Then Throw New InvalidOperationException("Sandbox database writes are disabled. Fetch a Production catalogue result before saving.")
+        If products Is Nothing OrElse products.Count = 0 Then Throw New InvalidOperationException("No catalogue products were returned for bulk saving.")
+        Dim summary As New BulkSaveResult With {.Total = products.Count}
+        Dim seen As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        Using connection = OpenConnection(connectionString)
+            Dim columns = ReadColumns(connection)
+            For Each product In products
+                Dim asin = If(product Is Nothing, "", If(product.Asin, "").Trim().ToUpperInvariant())
+                Dim detail As String
+                If asin <> "" AndAlso seen.Contains(asin) Then
+                    summary.Skipped += 1
+                    detail = asin & " | Skipped: duplicate ASIN in these catalogue results"
+                Else
                     Try
-                        transaction.Rollback()
-                    Catch
-                        ' A failed connection may already have rolled back the transaction.
+                        ValidateProduct(product)
+                        Dim operation As String = ""
+                        SaveWithConnection(connection, columns, product, operation)
+                        seen.Add(asin)
+                        If operation = "Inserted" Then
+                            summary.Inserted += 1
+                        Else
+                            summary.Updated += 1
+                        End If
+                        detail = asin & " | " & operation & " and verified"
+                    Catch ex As Exception
+                        summary.Failed += 1
+                        detail = If(asin = "", "(missing ASIN)", asin) & " | Failed: " & ex.Message
                     End Try
-                    Throw
+                End If
+                summary.Lines.Add(detail)
+                If progress IsNot Nothing Then
+                    progress.Report(New BulkProgress With {
+                        .Completed = summary.Lines.Count,
+                        .Total = summary.Total,
+                        .Inserted = summary.Inserted, .Updated = summary.Updated,
+                        .Failed = summary.Failed, .Skipped = summary.Skipped, .Line = detail
+                    })
+                End If
+            Next
+        End Using
+        Return summary
+    End Function
+
+    Private Shared Function SaveWithConnection(connection As SqlConnection, columns As Dictionary(Of String, Type),
+                                               product As ProductRecord, ByRef operation As String) As String
+        ValidateProduct(product)
+        Using transaction = connection.BeginTransaction(IsolationLevel.ReadCommitted)
+            Try
+                Dim current = ReadExisting(connection, product.Asin, transaction)
+                Dim inserting = current Is Nothing
+                Dim fieldsToSave As New List(Of String)()
+                Dim values As New List(Of Object)()
+                If inserting Then
+                    fieldsToSave.Add("Asin")
+                    values.Add(TypedValue("Asin", product.Asin, columns))
+                End If
+                For Each field In ProductFields
+                    Dim newValue As String = Nothing
+                    If product.Values.TryGetValue(field, newValue) Then
+                        fieldsToSave.Add(field)
+                        values.Add(TypedValue(field, newValue, columns))
+                    End If
+                Next
+                fieldsToSave.Add("LastUpdated")
+                values.Add(TypedValue("LastUpdated", DateTime.Now, columns))
+
+                Dim sql = BuildSaveSql(fieldsToSave, inserting)
+                If Not inserting Then values.Add(TypedValue("Asin", product.Asin, columns))
+                Using command As New SqlCommand(sql, connection, transaction)
+                    For index As Integer = 0 To values.Count - 1
+                        command.Parameters.AddWithValue("@p" & index.ToString(CultureInfo.InvariantCulture), values(index))
+                    Next
+                    Dim affected = command.ExecuteNonQuery()
+                    If affected <> 1 Then Throw New InvalidOperationException("Expected to save one row, but SQL Server reported " & affected.ToString(CultureInfo.InvariantCulture) & ".")
+                End Using
+                Dim saved = ReadExisting(connection, product.Asin, transaction)
+                VerifySavedValues(saved, fieldsToSave, values, columns)
+                transaction.Commit()
+
+                operation = If(inserting, "Inserted", "Updated")
+                Dim result As New System.Text.StringBuilder()
+                result.AppendLine(operation & " " & product.Asin & " in InventoryDimensions.")
+                result.AppendLine("Saved values verified:")
+                For Each field In fieldsToSave
+                    result.AppendLine(field & ": " & TextValue(saved(field)))
+                Next
+                Return result.ToString()
+            Catch
+                Try
+                    transaction.Rollback()
+                Catch
+                    ' SQL Server may already have rolled back a failed transaction.
                 End Try
-            End Using
+                Throw
+            End Try
         End Using
     End Function
 
@@ -383,6 +454,17 @@ Friend NotInheritable Class InventoryDatabase
     #End Region
 
     #End Region
+
+    Private NotInheritable Class ImmediateBulkProgress
+        Implements IProgress(Of BulkProgress)
+        Private ReadOnly Received As List(Of BulkProgress)
+        Public Sub New(records As List(Of BulkProgress))
+            Received = records
+        End Sub
+        Public Sub Report(value As BulkProgress) Implements IProgress(Of BulkProgress).Report
+            Received.Add(value)
+        End Sub
+    End Class
 
     #Region "04 - Disposable SQL Server integration test (CI only)"
     Friend Shared Sub RunCiSqlIntegrationTests()
@@ -521,6 +603,69 @@ Friend NotInheritable Class InventoryDatabase
                 refused = True
             End Try
             If Not refused Then Throw New InvalidOperationException("ASIN validation failed to reject unsafe identifiers.")
+
+            ' Mixed bulk batch: an invalid record rolls back, a subsequent record
+            ' inserts, an existing record updates and a repeated ASIN is skipped.
+            Dim failureBaseline As New ProductRecord With {.Asin = "B07N4M94X6"}
+            failureBaseline.Values("Weight") = "7"
+            Save(connectionString, failureBaseline)
+            Dim badBatch As New ProductRecord With {.Asin = "B07N4M94X6"}
+            badBatch.Values("Weight") = "999"
+            badBatch.Values("ImageURL") = New String("X"c, 1050)
+            Dim newBatch As New ProductRecord With {.Asin = "B07N4M94X5"}
+            newBatch.Values("Weight") = "1.1"
+            Dim changedBatch As New ProductRecord With {.Asin = "B07N4M94X4"}
+            changedBatch.Values("Weight") = "3.75"
+            Dim duplicateBatch As New ProductRecord With {.Asin = "b07n4m94x5"}
+            duplicateBatch.Values("Weight") = "999"
+            Dim batch As New List(Of ProductRecord) From {badBatch, newBatch, changedBatch, duplicateBatch}
+            refused = False
+            Try
+                SaveBulk("", batch, True)
+            Catch ex As InvalidOperationException
+                refused = ex.Message.Contains("Sandbox database writes are disabled")
+            End Try
+            If Not refused Then Throw New InvalidOperationException("Sandbox bulk writes must fail before opening SQL.")
+            Dim received As New List(Of BulkProgress)()
+            Dim observer As IProgress(Of BulkProgress) = New ImmediateBulkProgress(received)
+            Dim bulk = SaveBulk(connectionString, batch, False, observer)
+            If bulk.Total <> 4 OrElse bulk.Inserted <> 1 OrElse bulk.Updated <> 1 OrElse
+               bulk.Failed <> 1 OrElse bulk.Skipped <> 1 OrElse bulk.Lines.Count <> 4 OrElse received.Count <> 4 Then
+                Throw New InvalidOperationException("Mixed bulk counts/progress are incorrect. Inserted=" &
+                    bulk.Inserted.ToString() & " Updated=" & bulk.Updated.ToString() &
+                    " Failed=" & bulk.Failed.ToString() & " Skipped=" & bulk.Skipped.ToString())
+            End If
+            Using connection As New SqlConnection(connectionString)
+                connection.Open()
+                Dim existingBulk = ReadExisting(connection, "B07N4M94X4")
+                Dim insertedBulk = ReadExisting(connection, "B07N4M94X5")
+                Dim rolledBackBulk = ReadExisting(connection, "B07N4M94X6")
+                If existingBulk Is Nothing OrElse insertedBulk Is Nothing OrElse rolledBackBulk Is Nothing OrElse
+                   Convert.ToDecimal(rolledBackBulk("Weight"), CultureInfo.InvariantCulture) <> 7D OrElse
+                   Convert.ToDecimal(existingBulk("Weight"), CultureInfo.InvariantCulture) <> 3.75D OrElse
+                   Convert.ToDecimal(existingBulk("Height"), CultureInfo.InvariantCulture) <> 3D OrElse
+                   Convert.ToDecimal(insertedBulk("Weight"), CultureInfo.InvariantCulture) <> 1.1D Then
+                    Throw New InvalidOperationException("Bulk insert/update/rollback/preserve verification failed.")
+                End If
+            End Using
+
+            ' If the first appearance of an ASIN fails, a later valid appearance
+            ' must still be allowed to save, not skipped as a duplicate.
+            Dim recoverBad As New ProductRecord With {.Asin = "B07N4M94X7"}
+            recoverBad.Values("ImageURL") = New String("Y"c, 1050)
+            Dim recoverGood As New ProductRecord With {.Asin = "B07N4M94X7"}
+            recoverGood.Values("Weight") = "8"
+            Dim retryResult = SaveBulk(connectionString, New List(Of ProductRecord) From {recoverBad, recoverGood})
+            If retryResult.Failed <> 1 OrElse retryResult.Inserted <> 1 OrElse retryResult.Skipped <> 0 Then
+                Throw New InvalidOperationException("A failed first ASIN must not suppress a later valid row.")
+            End If
+            Using connection As New SqlConnection(connectionString)
+                connection.Open()
+                Dim recovered = ReadExisting(connection, "B07N4M94X7")
+                If recovered Is Nothing OrElse Convert.ToDecimal(recovered("Weight"), CultureInfo.InvariantCulture) <> 8D Then
+                    Throw New InvalidOperationException("A valid duplicate did not recover after the first row failed.")
+                End If
+            End Using
 
             ' Real deployments might store dimensions as numbers and category IDs as integers.
             Using connection As New SqlConnection(connectionString)
