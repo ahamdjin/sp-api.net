@@ -3399,6 +3399,7 @@ Public Partial Class MainForm
             "Update all " & products.Count.ToString(CultureInfo.InvariantCulture) &
             " returned catalogue rows in SQL Server database " & target.InitialCatalog & "?" & Environment.NewLine &
             "A result for every ASIN will be displayed in the Database tab." & Environment.NewLine &
+            "Amazon units and category IDs are saved as returned, without legacy conversion." & Environment.NewLine &
             "Use a backup/test database for the first real write.",
             "Confirm bulk database update",
             MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2)
